@@ -1,0 +1,72 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: msg-relay
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3307/msg_relay?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false
+    username: root
+    password: ${DB_PASSWORD:root}
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      lettuce:
+        pool:
+          max-active: 200
+          max-idle: 50
+          min-idle: 10
+
+  elasticsearch:
+    uris: http://localhost:9200
+
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: msg-relay-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+  consumer:
+    group: msg-relay-consumer-group
+
+jwt:
+  secret: ${JWT_SECRET:msg-relay-jwt-secret-key-2024-please-change-in-production}
+  access-token-expire: 7200
+  refresh-token-expire: 604800
+
+canal:
+  host: 127.0.0.1
+  port: 11111
+  destination: example
+
+msg-relay:
+  netty:
+    ws-port: 8090
+    node-id: ${NODE_ID:node-1}
+    heartbeat:
+      enabled: true                  # 是否启用控制帧心跳（替代旧的文本 PING/PONG）
+      interval-seconds: 20           # 服务端发 Ping 控制帧的周期（T）
+      pong-timeout-seconds: 6        # 等待 Pong 回复的超时（P），超时则 miss++
+      max-misses: 2                  # 连续未收到 Pong 的次数（N），达到后断连
+  snowflake:
+    worker-id: ${SNOWFLAKE_WORKER_ID:1}
+    datacenter-id: ${SNOWFLAKE_DATACENTER_ID:1}
+  presence:
+    mode: zset                       # online|zset：zset 用 Lua + Redis TIME，无 KEYS 阻塞
+    lease-ttl-seconds: 40            # 偏准：租约窗口，允许轻微抖动但离线更快
+
+# 阿里云 OSS
+oss:
+  endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+  accessKeyId: ${OSS_ACCESS_KEY_ID:}
+  accessKeySecret: ${OSS_ACCESS_KEY_SECRET:}
+  bucketName: ${OSS_BUCKET_NAME:}

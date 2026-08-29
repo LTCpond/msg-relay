@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.user.repository.TeamAdminMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.user.model.entity.TeamAdmin">
+        <id column="id" property="id"/>
+        <result column="team_id" property="teamId"/>
+        <result column="user_id" property="userId"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="deleted" property="deleted"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.user.model.entity.TeamAdmin">
+        INSERT INTO t_team_admin (id, team_id, user_id, created_at)
+        VALUES (#{id}, #{teamId}, #{userId}, NOW())
+    </insert>
+
+    <update id="deleteByTeamAndUser">
+        UPDATE t_team_admin SET deleted = 1 WHERE team_id = #{teamId} AND user_id = #{userId} AND deleted = 0
+    </update>
+
+    <select id="selectByTeamId" resultMap="BaseResultMap">
+        SELECT id, team_id, user_id, created_at, deleted
+        FROM t_team_admin WHERE team_id = #{teamId} AND deleted = 0
+    </select>
+
+    <select id="existsByTeamAndUser" resultType="boolean">
+        SELECT COUNT(*) > 0 FROM t_team_admin
+        WHERE team_id = #{teamId} AND user_id = #{userId} AND deleted = 0
+    </select>
+
+</mapper>

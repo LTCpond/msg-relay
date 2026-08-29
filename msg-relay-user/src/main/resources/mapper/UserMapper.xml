@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.user.repository.UserMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.user.model.entity.User">
+        <id column="id" property="id"/>
+        <result column="username" property="username"/>
+        <result column="password" property="password"/>
+        <result column="job_number" property="jobNumber"/>
+        <result column="nickname" property="nickname"/>
+        <result column="avatar" property="avatar"/>
+        <result column="email" property="email"/>
+        <result column="phone" property="phone"/>
+        <result column="team_id" property="teamId"/>
+        <result column="dept_id" property="deptId"/>
+        <result column="status" property="status"/>
+        <result column="last_login_at" property="lastLoginAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted" property="deleted"/>
+    </resultMap>
+
+    <sql id="baseColumns">
+        id, username, password, job_number, nickname, avatar, email, phone,
+        team_id, dept_id, status, last_login_at, created_at, updated_at, deleted
+    </sql>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.user.model.entity.User">
+        INSERT INTO t_user (id, username, password, job_number, nickname, avatar, email, phone, team_id, dept_id, status, last_login_at, created_at, updated_at)
+        VALUES (#{id}, #{username}, #{password}, #{jobNumber}, #{nickname}, #{avatar}, #{email}, #{phone}, #{teamId}, #{deptId}, #{status}, #{lastLoginAt}, NOW(), NOW())
+    </insert>
+
+    <update id="updateApprovalFields">
+        UPDATE t_user
+        SET team_id = #{teamId}, job_number = #{jobNumber}, nickname = #{nickname},
+            dept_id = #{deptId}, updated_at = NOW()
+        WHERE id = #{id} AND deleted = 0
+    </update>
+
+    <update id="updateById" parameterType="com.ltcpond.msgrelay.user.model.entity.User">
+        UPDATE t_user
+        SET nickname = #{nickname}, avatar = #{avatar}, email = #{email}, phone = #{phone},
+            dept_id = #{deptId}, status = #{status}, last_login_at = #{lastLoginAt}, updated_at = NOW()
+        WHERE id = #{id} AND deleted = 0
+    </update>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE id = #{id} AND deleted = 0
+    </select>
+
+    <select id="selectByUsername" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE username = #{username} AND deleted = 0 LIMIT 1
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE deleted = 0
+    </select>
+
+    <select id="countByUsername" resultType="long">
+        SELECT COUNT(*) FROM t_user WHERE username = #{username} AND deleted = 0
+    </select>
+
+    <select id="countByJobNumberAndTeamId" resultType="long">
+        SELECT COUNT(*) FROM t_user WHERE job_number = #{jobNumber} AND team_id = #{teamId} AND deleted = 0
+    </select>
+
+    <update id="deleteByIdLogic">
+        UPDATE t_user SET deleted = 1, updated_at = NOW() WHERE id = #{id}
+    </update>
+
+    <select id="selectByTeamId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE team_id = #{teamId} AND deleted = 0
+    </select>
+
+    <select id="selectByDeptId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE dept_id = #{deptId} AND deleted = 0
+    </select>
+
+    <select id="searchByTeamIdAndKeyword" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user
+        WHERE team_id = #{teamId} AND deleted = 0
+          AND (job_number LIKE CONCAT('%', #{keyword}, '%') OR nickname LIKE CONCAT('%', #{keyword}, '%'))
+    </select>
+
+</mapper>

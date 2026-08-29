@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.group.repository.GroupMemberIndexMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.group.model.entity.GroupMemberIndex">
+        <id column="id" property="id"/>
+        <result column="group_id" property="groupId"/>
+        <result column="user_id" property="userId"/>
+        <result column="member_index" property="memberIndex"/>
+        <result column="status" property="status"/>
+        <result column="joined_at" property="joinedAt"/>
+        <result column="left_at" property="leftAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="baseColumns">id, group_id, user_id, member_index, status, joined_at, left_at, created_at, updated_at</sql>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.group.model.entity.GroupMemberIndex">
+        INSERT INTO t_group_member_index (id, group_id, user_id, member_index, status, joined_at, created_at, updated_at)
+        VALUES (#{id}, #{groupId}, #{userId}, #{memberIndex}, #{status}, #{joinedAt}, NOW(), NOW())
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE t_group_member_index SET status = #{status}, updated_at = NOW()
+        WHERE group_id = #{groupId} AND user_id = #{userId}
+    </update>
+
+    <update id="updateLeftAt">
+        UPDATE t_group_member_index SET left_at = NOW(), updated_at = NOW()
+        WHERE group_id = #{groupId} AND user_id = #{userId}
+    </update>
+
+    <update id="updateJoinedAt">
+        UPDATE t_group_member_index SET joined_at = NOW(), updated_at = NOW()
+        WHERE group_id = #{groupId} AND user_id = #{userId}
+    </update>
+
+    <select id="selectByGroupAndUser" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member_index
+        WHERE group_id = #{groupId} AND user_id = #{userId}
+    </select>
+
+    <select id="getMaxIndex" resultType="java.lang.Integer">
+        SELECT MAX(member_index) FROM t_group_member_index WHERE group_id = #{groupId}
+    </select>
+
+    <select id="selectByGroupId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member_index WHERE group_id = #{groupId}
+    </select>
+
+    <select id="selectActiveByGroupId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member_index WHERE group_id = #{groupId} AND status = 1
+    </select>
+
+</mapper>

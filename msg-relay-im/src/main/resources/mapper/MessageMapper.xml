@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.im.repository.MessageMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.im.model.entity.Message">
+        <id column="id" property="id"/>
+        <result column="msg_id" property="msgId"/>
+        <result column="sender_id" property="senderId"/>
+        <result column="receiver_id" property="receiverId"/>
+        <result column="receiver_type" property="receiverType"/>
+        <result column="msg_type" property="msgType"/>
+        <result column="content" property="content"/>
+        <result column="extra_json" property="extraJson"/>
+        <result column="media_meta_json" property="mediaMetaJson"/>
+        <result column="status" property="status"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted" property="deleted"/>
+    </resultMap>
+
+    <sql id="baseColumns">
+        id, msg_id, sender_id, receiver_id, receiver_type, msg_type,
+        content, extra_json, media_meta_json, status, created_at, updated_at, deleted
+    </sql>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.im.model.entity.Message">
+        INSERT INTO t_message (id, msg_id, sender_id, receiver_id, receiver_type, msg_type, content, extra_json, media_meta_json, status, created_at, updated_at)
+        VALUES (#{id}, #{msgId}, #{senderId}, #{receiverId}, #{receiverType}, #{msgType}, #{content}, #{extraJson}, #{mediaMetaJson}, #{status}, NOW(), NOW())
+    </insert>
+
+    <update id="updateById" parameterType="com.ltcpond.msgrelay.im.model.entity.Message">
+        UPDATE t_message SET status = #{status}, extra_json = #{extraJson}, updated_at = NOW()
+        WHERE id = #{id} AND deleted = 0
+    </update>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message WHERE id = #{id} AND deleted = 0
+    </select>
+
+    <select id="selectByMsgId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message WHERE msg_id = #{msgId} AND deleted = 0
+    </select>
+
+    <select id="selectHistory" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message
+        WHERE deleted = 0
+        <choose>
+            <when test="receiverType == 1">
+                AND ((sender_id = #{userId} AND receiver_id = #{targetId})
+                     OR (sender_id = #{targetId} AND receiver_id = #{userId}))
+            </when>
+            <when test="receiverType == 2">
+                AND receiver_id = #{targetId}
+            </when>
+        </choose>
+        <if test="beforeMsgId != null">
+          AND msg_id &lt; #{beforeMsgId}
+        </if>
+        ORDER BY msg_id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectUnacknowledgedGroupMessages" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message
+        WHERE deleted = 0
+          AND receiver_id = #{groupId}
+          AND receiver_type = 2
+          AND sender_id != #{userId}
+          AND created_at &gt; #{afterTime}
+        ORDER BY msg_id ASC
+    </select>
+
+    <select id="selectStaleMessages" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message
+        WHERE deleted = 0
+          AND status = #{status}
+          AND created_at &lt; #{cutoff}
+        ORDER BY created_at ASC
+        LIMIT 500
+    </select>
+
+</mapper>

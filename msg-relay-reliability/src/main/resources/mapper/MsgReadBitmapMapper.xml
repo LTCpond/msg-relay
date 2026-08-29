@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.reliability.repository.MsgReadBitmapMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.reliability.model.entity.MsgReadBitmap">
+        <id column="msg_id" property="msgId"/>
+        <result column="group_id" property="groupId"/>
+        <result column="delivered_bitmap" property="deliveredBitmap"/>
+        <result column="delivered_count" property="deliveredCount"/>
+        <result column="read_bitmap" property="readBitmap"/>
+        <result column="read_count" property="readCount"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.reliability.model.entity.MsgReadBitmap">
+        INSERT INTO t_msg_read_bitmap (msg_id, group_id, delivered_bitmap, delivered_count, read_bitmap, read_count, created_at, updated_at)
+        VALUES (#{msgId}, #{groupId}, #{deliveredBitmap}, #{deliveredCount}, #{readBitmap}, #{readCount}, NOW(), NOW())
+    </insert>
+
+    <update id="updateDeliveredBitmap">
+        UPDATE t_msg_read_bitmap SET delivered_bitmap = #{bitmap}, updated_at = NOW()
+        WHERE msg_id = #{msgId}
+    </update>
+
+    <update id="updateReadBitmap">
+        UPDATE t_msg_read_bitmap SET read_bitmap = #{bitmap}, updated_at = NOW()
+        WHERE msg_id = #{msgId}
+    </update>
+
+    <update id="incrementDeliveredCount">
+        UPDATE t_msg_read_bitmap SET delivered_count = delivered_count + 1, updated_at = NOW()
+        WHERE msg_id = #{msgId}
+    </update>
+
+    <update id="incrementReadCount">
+        UPDATE t_msg_read_bitmap SET read_count = read_count + 1, updated_at = NOW()
+        WHERE msg_id = #{msgId}
+    </update>
+
+    <select id="selectByMsgId" resultMap="BaseResultMap">
+        SELECT * FROM t_msg_read_bitmap WHERE msg_id = #{msgId}
+    </select>
+
+</mapper>

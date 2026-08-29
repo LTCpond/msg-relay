@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.im.repository.ConversationMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.im.model.entity.Conversation">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="target_id" property="targetId"/>
+        <result column="target_type" property="targetType"/>
+        <result column="last_msg_id" property="lastMsgId"/>
+        <result column="unread_count" property="unreadCount"/>
+        <result column="last_read_time" property="lastReadTime"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted" property="deleted"/>
+    </resultMap>
+
+    <sql id="baseColumns">
+        id, user_id, target_id, target_type, last_msg_id, unread_count,
+        last_read_time, created_at, updated_at, deleted
+    </sql>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.im.model.entity.Conversation">
+        INSERT INTO t_conversation (id, user_id, target_id, target_type, last_msg_id, unread_count, last_read_time, created_at, updated_at)
+        VALUES (#{id}, #{userId}, #{targetId}, #{targetType}, #{lastMsgId}, #{unreadCount}, #{lastReadTime}, NOW(), NOW())
+    </insert>
+
+    <update id="updateById" parameterType="com.ltcpond.msgrelay.im.model.entity.Conversation">
+        UPDATE t_conversation
+        SET last_msg_id = #{lastMsgId}, unread_count = #{unreadCount},
+            last_read_time = #{lastReadTime},
+            updated_at = NOW()
+        WHERE id = #{id} AND deleted = 0
+    </update>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_conversation WHERE id = #{id} AND deleted = 0
+    </select>
+
+    <select id="selectByUserAndTarget" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_conversation
+        WHERE user_id = #{userId} AND target_id = #{targetId} AND deleted = 0
+    </select>
+
+    <select id="selectByUserId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_conversation
+        WHERE user_id = #{userId} AND deleted = 0 ORDER BY updated_at DESC
+    </select>
+
+    <!-- 原子递增未读数 — last_msg_id &lt; msgId 保证同一消息只计数一次 -->
+    <update id="updateConversationByMsg">
+        UPDATE t_conversation
+        SET unread_count = unread_count + 1,
+            last_msg_id = #{msgId},
+            updated_at = NOW()
+        WHERE user_id = #{userId}
+          AND target_id = #{targetId}
+          AND last_msg_id &lt; #{msgId}
+          AND deleted = 0
+    </update>
+
+    <update id="deleteByIdLogic">
+        UPDATE t_conversation SET deleted = 1, updated_at = NOW() WHERE id = #{id}
+    </update>
+
+</mapper>

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.group.repository.GroupMemberMapper">
+
+    <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.group.model.entity.GroupMember">
+        <id column="id" property="id"/>
+        <result column="group_id" property="groupId"/>
+        <result column="user_id" property="userId"/>
+        <result column="role" property="role"/>
+        <result column="is_muted" property="isMuted"/>
+        <result column="mute_expire_at" property="muteExpireAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted" property="deleted"/>
+    </resultMap>
+
+    <sql id="baseColumns">id, group_id, user_id, role, is_muted, mute_expire_at, created_at, updated_at, deleted</sql>
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.group.model.entity.GroupMember">
+        INSERT INTO t_group_member (id, group_id, user_id, role, is_muted, mute_expire_at, created_at, updated_at)
+        VALUES (#{id}, #{groupId}, #{userId}, #{role}, #{isMuted}, #{muteExpireAt}, NOW(), NOW())
+    </insert>
+
+    <update id="updateById" parameterType="com.ltcpond.msgrelay.group.model.entity.GroupMember">
+        UPDATE t_group_member SET role = #{role}, is_muted = #{isMuted}, mute_expire_at = #{muteExpireAt}, updated_at = NOW()
+        WHERE id = #{id} AND deleted = 0
+    </update>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member WHERE id = #{id} AND deleted = 0
+    </select>
+
+    <select id="selectByGroupIdAndUserId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member
+        WHERE group_id = #{groupId} AND user_id = #{userId} AND deleted = 0
+    </select>
+
+    <select id="selectByGroupId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_group_member
+        WHERE group_id = #{groupId} AND deleted = 0 ORDER BY role ASC, created_at ASC
+    </select>
+
+    <select id="countByGroupId" resultType="long">
+        SELECT COUNT(*) FROM t_group_member WHERE group_id = #{groupId} AND deleted = 0
+    </select>
+
+    <update id="deleteByIdLogic">
+        UPDATE t_group_member SET deleted = 1, updated_at = NOW() WHERE id = #{id}
+    </update>
+
+    <update id="deleteByGroupIdAndUserId">
+        UPDATE t_group_member SET deleted = 1, updated_at = NOW() WHERE group_id = #{groupId} AND user_id = #{userId} AND deleted = 0
+    </update>
+
+</mapper>

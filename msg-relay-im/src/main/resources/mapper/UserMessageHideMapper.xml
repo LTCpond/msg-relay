@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ltcpond.msgrelay.im.repository.UserMessageHideMapper">
+
+    <insert id="insert" parameterType="com.ltcpond.msgrelay.im.model.entity.UserMessageHide">
+        INSERT INTO t_user_message_hide (id, user_id, msg_id, created_at)
+        VALUES (#{id}, #{userId}, #{msgId}, NOW())
+    </insert>
+
+    <select id="exists" resultType="boolean">
+        SELECT COUNT(*) > 0 FROM t_user_message_hide
+        WHERE user_id = #{userId} AND msg_id = #{msgId}
+    </select>
+
+    <select id="selectMsgIdsByUserId" resultType="long">
+        SELECT msg_id FROM t_user_message_hide WHERE user_id = #{userId}
+    </select>
+
+</mapper>
