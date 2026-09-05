@@ -5,6 +5,9 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
+import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
+import com.ltcpond.msgrelay.im.service.MessageAccessService;
+import com.ltcpond.msgrelay.im.repository.UserMessageHideMapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -33,11 +36,18 @@ public class SearchService {
     @Resource
     private MultiLevelCache cache;
 
+    @Resource
+    private MessageAccessService messageAccessService;
+
+    @Resource
+    private UserMessageHideMapper hideMapper;
+
     private static final String INDEX_NAME = "message_index";
 
     /** 在指定会话内搜索消息，过滤当前用户隐藏的消息 */
     public List<Map<String, Object>> search(String keyword, Long receiverId, int receiverType,
                                             Long userId, int page, int size) {
+        messageAccessService.assertCanAccessConversation(userId, receiverId, receiverType);
         try {
             SearchResponse<Map> response = elasticsearchClient.search(s -> s
                             .index(INDEX_NAME)
@@ -48,14 +58,21 @@ public class SearchService {
                                                     .query(keyword)
                                                     .analyzer("ik_smart")))
                                             .filter(f -> f.term(t -> t
-                                                    .field("receiver_id")
-                                                    .value(receiverId)))
-                                            .filter(f -> f.term(t -> t
                                                     .field("receiver_type")
                                                     .value(receiverType)))
                                             .filter(f -> f.term(t -> t
                                                     .field("deleted")
                                                     .value("0")))
+                                            .filter(receiverType == ReceiverType.GROUP.getCode()
+                                                    ? f -> f.term(t -> t.field("receiver_id").value(receiverId))
+                                                    : f -> f.bool(participants -> participants
+                                                            .minimumShouldMatch("1")
+                                                            .should(side -> side.bool(pair -> pair
+                                                                    .filter(x -> x.term(t -> t.field("sender_id").value(userId)))
+                                                                    .filter(x -> x.term(t -> t.field("receiver_id").value(receiverId)))))
+                                                            .should(side -> side.bool(pair -> pair
+                                                                    .filter(x -> x.term(t -> t.field("sender_id").value(receiverId)))
+                                                                    .filter(x -> x.term(t -> t.field("receiver_id").value(userId)))))))
                                     )
                             )
                             .sort(srt -> srt.field(f -> f
@@ -90,7 +107,8 @@ public class SearchService {
     private Set<String> getHiddenSet(Long userId) {
         String key = "user:hidden:msgs:" + userId;
         Set<String> result = cache.get(key, Set.class,
-                k -> Collections.emptySet(), 300);
+                k -> hideMapper.selectMsgIdsByUserId(userId).stream()
+                        .map(String::valueOf).collect(java.util.stream.Collectors.toSet()), 300);
         return result != null ? result : Collections.emptySet();
     }
 }

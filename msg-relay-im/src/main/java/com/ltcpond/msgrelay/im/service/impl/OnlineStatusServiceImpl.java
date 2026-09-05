@@ -4,7 +4,7 @@ import com.ltcpond.msgrelay.im.config.PresenceConfig;
 import com.ltcpond.msgrelay.im.service.OnlineStatusService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
@@ -31,7 +31,7 @@ import java.util.*;
 public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     @Resource
-    private RedisTemplate<String, Object> redisTemplate;
+    private StringRedisTemplate redisTemplate;
 
     @Resource
     private PresenceConfig presenceConfig;
@@ -87,6 +87,25 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
             -- 返回当前在线设备数
             return redis.call('ZCARD', userKey)
+            """;
+
+    /** 心跳只续租，不覆盖 online() 写入的 nodeId/channelId 路由。 */
+    private static final String LUA_HEARTBEAT = """
+            local userKey = KEYS[1]
+            local devKey = KEYS[2]
+            local deviceId = ARGV[1]
+            local ttl = tonumber(ARGV[2])
+            local time = redis.call('TIME')
+            local now = tonumber(time[1])
+            if redis.call('EXISTS', devKey) == 0 then
+                return 0
+            end
+            redis.call('ZREMRANGEBYSCORE', userKey, '-inf', now)
+            redis.call('ZADD', userKey, now + ttl, deviceId)
+            redis.call('HSET', devKey, 'lastSeen', now)
+            redis.call('EXPIRE', devKey, ttl)
+            redis.call('EXPIRE', userKey, ttl + 60)
+            return 1
             """;
 
     /**
@@ -156,6 +175,43 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
             return redis.call('ZRANGE', userKey, 0, -1)
             """;
 
+    private static final String LUA_BATCH_ONLINE = """
+            local time = redis.call('TIME')
+            local now = tonumber(time[1])
+            local result = {}
+            for _, key in ipairs(KEYS) do
+                redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
+                if redis.call('ZCARD', key) > 0 then
+                    table.insert(result, 1)
+                else
+                    table.insert(result, 0)
+                end
+            end
+            return result
+            """;
+
+    /** 一次 Lua 批量完成 user -> active devices -> nodeId 路由解析，避免逐用户 RTT。 */
+    private static final String LUA_BATCH_NODES = """
+            local time = redis.call('TIME')
+            local now = tonumber(time[1])
+            local result = {}
+            for i, userKey in ipairs(KEYS) do
+                redis.call('ZREMRANGEBYSCORE', userKey, '-inf', now)
+                local devices = redis.call('ZRANGEBYSCORE', userKey, now, '+inf')
+                local seen = {}
+                for _, deviceId in ipairs(devices) do
+                    local devKey = 'online:dev:' .. ARGV[i] .. ':' .. deviceId
+                    local targetNode = redis.call('HGET', devKey, 'nodeId')
+                    if targetNode and not seen[targetNode] then
+                        table.insert(result, ARGV[i])
+                        table.insert(result, targetNode)
+                        seen[targetNode] = true
+                    end
+                end
+            end
+            return result
+            """;
+
     @Override
     public void online(Long userId, String deviceId, String channelId) {
         String key = USER_SET_PREFIX + userId;
@@ -181,14 +237,12 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     @Override
     public void heartbeat(Long userId, String deviceId) {
-        // 续租与上线共用同一个 Lua touch 脚本
-        // channelId 传 deviceId（续租时 channelId 不重要，只需更新 score 和 lastSeen）
-        String key = USER_SET_PREFIX + userId;
+        String userKey = USER_SET_PREFIX + userId;
+        String devKey = DEV_INFO_PREFIX + userId + ":" + deviceId;
         long ttl = presenceConfig.getLeaseTtlSeconds();
 
-        DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_TOUCH, Long.class);
-        redisTemplate.execute(script, Collections.singletonList(key),
-                deviceId, nodeId, deviceId, String.valueOf(ttl));
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_HEARTBEAT, Long.class);
+        redisTemplate.execute(script, List.of(userKey, devKey), deviceId, String.valueOf(ttl));
 
         log.debug("续租: userId={}, deviceId={}, ttl={}s", userId, deviceId, ttl);
     }
@@ -203,18 +257,18 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Map<Long, Boolean> batchIsOnline(List<Long> userIds) {
-        // 批量查询：用 pipeline 批量执行 Lua，减少 RTT
         Map<Long, Boolean> result = new HashMap<>();
-        DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_IS_ONLINE, Long.class);
-
-        for (Long userId : userIds) {
-            String key = USER_SET_PREFIX + userId;
-            Long online = redisTemplate.execute(script, Collections.singletonList(key));
-            result.put(userId, Long.valueOf(1L).equals(online));
+        if (userIds.isEmpty()) {
+            return result;
         }
-
+        List<String> keys = userIds.stream().map(id -> USER_SET_PREFIX + id).toList();
+        DefaultRedisScript<List> script = new DefaultRedisScript<>(LUA_BATCH_ONLINE, List.class);
+        List<?> states = redisTemplate.execute(script, keys);
+        for (int i = 0; i < userIds.size(); i++) {
+            Object state = states != null && i < states.size() ? states.get(i) : 0;
+            result.put(userIds.get(i), "1".equals(String.valueOf(state)));
+        }
         return result;
     }
 
@@ -223,6 +277,28 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
         String devKey = DEV_INFO_PREFIX + userId + ":" + deviceId;
         Object nodeId = redisTemplate.opsForHash().get(devKey, "nodeId");
         return nodeId != null ? nodeId.toString() : null;
+    }
+
+    @Override
+    public Map<Long, Set<String>> getOnlineNodeIds(Collection<Long> userIds) {
+        Map<Long, Set<String>> result = new HashMap<>();
+        if (userIds == null || userIds.isEmpty()) {
+            return result;
+        }
+        List<Long> orderedUsers = userIds.stream().distinct().toList();
+        List<String> keys = orderedUsers.stream().map(id -> USER_SET_PREFIX + id).toList();
+        Object[] args = orderedUsers.stream().map(String::valueOf).toArray();
+        DefaultRedisScript<List> script = new DefaultRedisScript<>(LUA_BATCH_NODES, List.class);
+        List<?> routes = redisTemplate.execute(script, keys, args);
+        if (routes == null) {
+            return result;
+        }
+        for (int i = 0; i + 1 < routes.size(); i += 2) {
+            Long userId = Long.valueOf(String.valueOf(routes.get(i)));
+            String targetNode = String.valueOf(routes.get(i + 1));
+            result.computeIfAbsent(userId, ignored -> new HashSet<>()).add(targetNode);
+        }
+        return result;
     }
 
     /**

@@ -18,7 +18,8 @@ public interface ConversationMapper {
 
     /** 根据用户和目标查询唯一会话 */
     Conversation selectByUserAndTarget(@Param("userId") Long userId,
-                                        @Param("targetId") Long targetId);
+                                        @Param("targetId") Long targetId,
+                                        @Param("targetType") Integer targetType);
 
     /** 查询用户的所有会话列表 */
     List<Conversation> selectByUserId(@Param("userId") Long userId);
@@ -26,7 +27,16 @@ public interface ConversationMapper {
     /** 原子递增未读数，last_msg_id < msgId 保证幂等 */
     int updateConversationByMsg(@Param("userId") Long userId,
                                  @Param("targetId") Long targetId,
+                                 @Param("targetType") Integer targetType,
                                  @Param("msgId") Long msgId);
+
+    /** 唯一键上的原子 upsert，避免并发首条消息重复创建会话。 */
+    int upsertByMessage(@Param("id") Long id,
+                        @Param("userId") Long userId,
+                        @Param("targetId") Long targetId,
+                        @Param("targetType") Integer targetType,
+                        @Param("msgId") Long msgId,
+                        @Param("incrementUnread") boolean incrementUnread);
 
     int deleteByIdLogic(@Param("id") Long id);
 }

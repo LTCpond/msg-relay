@@ -1,7 +1,9 @@
 package com.ltcpond.msgrelay.im.service;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 在线状态服务接口（支持多设备）
@@ -28,4 +30,7 @@ public interface OnlineStatusService {
 
     /** 获取设备所在节点 ID */
     String getNodeId(Long userId, String deviceId);
+
+    /** 批量解析在线用户所在节点；同一用户多设备可落在多个节点。 */
+    Map<Long, Set<String>> getOnlineNodeIds(Collection<Long> userIds);
 }

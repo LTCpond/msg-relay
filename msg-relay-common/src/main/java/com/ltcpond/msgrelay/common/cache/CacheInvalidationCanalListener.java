@@ -24,8 +24,8 @@ import java.util.concurrent.Executors;
  * 监听 MySQL binlog，当被缓存的表发生 INSERT/UPDATE/DELETE 时，
  * 从 binlog 中提取 key 列，调用 MultiLevelCache.evict() 失效缓存。
  *
- * 解决 Cache Aside 模式的竞态窗口：Canal 读到 binlog 时 DB 事务已提交，
- * 不存在"更新 DB 后、删缓存前读到旧数据"的时机。
+ * Canal 属于异步 CDC，DB commit 到事件消费之间仍有短暂旧缓存窗口；
+ * 消费后删除 Redis，并广播所有实例删除本地 Caffeine，最终收敛一致。
  */
 @Slf4j
 @Component

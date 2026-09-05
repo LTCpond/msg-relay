@@ -3,8 +3,10 @@ package com.ltcpond.msgrelay.common.cache;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.ltcpond.msgrelay.common.lock.LockTemplate;
+import com.ltcpond.msgrelay.common.lock.LockAcquisitionException;
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -38,6 +40,11 @@ public class MultiLevelCache {
 
     @Resource
     private LockTemplate lockTemplate;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    public static final String INVALIDATION_CHANNEL = "msg-relay:cache:invalidate";
 
     public MultiLevelCache() {
         // Caffeine 作为 L1 本地缓存，最大 1 万条，5 分钟过期
@@ -90,38 +97,40 @@ public class MultiLevelCache {
         try {
             return lockTemplate.executeWithLock(lockKey, 5, 10, () -> {
                 T lockedValue = getFromCache(key, clazz);
-                if (lockedValue == NULL_PRESENT) {
-                    return null;
-                }
-                if (lockedValue != null) {
-                    return lockedValue;
-                }
+                if (lockedValue == NULL_PRESENT) return null;
+                if (lockedValue != null) return lockedValue;
                 T dbValue = dbLoader.apply(key);
-                if (dbValue != null) {
-                    redisTemplate.opsForValue().set(key, dbValue, randomTtl(redisTtlSeconds), TimeUnit.SECONDS);
-                    caffeineCache.put(key, dbValue);
-                } else {
-                    redisTemplate.opsForValue().set(key, NULL_MARKER, NULL_TTL_SECONDS, TimeUnit.SECONDS);
-                    caffeineCache.put(key, NULL_MARKER);
-                }
+                cacheLoadedValue(key, dbValue, redisTtlSeconds);
                 return dbValue;
             });
-        } catch (RuntimeException e) {
+        } catch (LockAcquisitionException e) {
+            // 只对“未取得锁”降级回源；dbLoader 自身异常不会落入这里，因此绝不重复执行。
             T dbValue = dbLoader.apply(key);
-            if (dbValue != null) {
-                caffeineCache.put(key, dbValue);
-                redisTemplate.opsForValue().set(key, dbValue, randomTtl(redisTtlSeconds), TimeUnit.SECONDS);
-            } else {
-                caffeineCache.put(key, NULL_MARKER);
-                redisTemplate.opsForValue().set(key, NULL_MARKER, NULL_TTL_SECONDS, TimeUnit.SECONDS);
-            }
+            cacheLoadedValue(key, dbValue, redisTtlSeconds);
             return dbValue;
         }
     }
 
+    /** 删除 Redis/L1 并广播，让所有应用实例同步删除各自的 Caffeine L1。 */
     public void evict(String key) {
-        caffeineCache.invalidate(key);
+        invalidateLocal(key);
         redisTemplate.delete(key);
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, key);
+    }
+
+    /** 仅删除当前 JVM 的 L1；供失效广播订阅者调用，避免广播环路。 */
+    public void invalidateLocal(String key) {
+        caffeineCache.invalidate(key);
+    }
+
+    private <T> void cacheLoadedValue(String key, T dbValue, long redisTtlSeconds) {
+        if (dbValue != null) {
+            caffeineCache.put(key, dbValue);
+            redisTemplate.opsForValue().set(key, dbValue, randomTtl(redisTtlSeconds), TimeUnit.SECONDS);
+        } else {
+            caffeineCache.put(key, NULL_MARKER);
+            redisTemplate.opsForValue().set(key, NULL_MARKER, NULL_TTL_SECONDS, TimeUnit.SECONDS);
+        }
     }
 
     /** 过期时间加 20% 随机浮动，防止缓存雪崩 */

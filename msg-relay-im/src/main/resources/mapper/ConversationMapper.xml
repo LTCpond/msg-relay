@@ -39,7 +39,8 @@
 
     <select id="selectByUserAndTarget" resultMap="BaseResultMap">
         SELECT <include refid="baseColumns"/> FROM t_conversation
-        WHERE user_id = #{userId} AND target_id = #{targetId} AND deleted = 0
+        WHERE user_id = #{userId} AND target_id = #{targetId}
+          AND target_type = #{targetType} AND deleted = 0
     </select>
 
     <select id="selectByUserId" resultMap="BaseResultMap">
@@ -55,9 +56,24 @@
             updated_at = NOW()
         WHERE user_id = #{userId}
           AND target_id = #{targetId}
+          AND target_type = #{targetType}
           AND last_msg_id &lt; #{msgId}
           AND deleted = 0
     </update>
+
+    <insert id="upsertByMessage">
+        INSERT INTO t_conversation
+            (id, user_id, target_id, target_type, last_msg_id, unread_count, created_at, updated_at, deleted)
+        VALUES
+            (#{id}, #{userId}, #{targetId}, #{targetType}, #{msgId},
+             IF(#{incrementUnread}, 1, 0), NOW(), NOW(), 0)
+        ON DUPLICATE KEY UPDATE
+            unread_count = IF(last_msg_id IS NULL OR last_msg_id &lt; VALUES(last_msg_id),
+                              unread_count + IF(#{incrementUnread}, 1, 0), unread_count),
+            updated_at = IF(last_msg_id IS NULL OR last_msg_id &lt; VALUES(last_msg_id), NOW(), updated_at),
+            last_msg_id = GREATEST(COALESCE(last_msg_id, 0), VALUES(last_msg_id)),
+            deleted = 0
+    </insert>
 
     <update id="deleteByIdLogic">
         UPDATE t_conversation SET deleted = 1, updated_at = NOW() WHERE id = #{id}

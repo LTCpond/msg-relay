@@ -35,5 +35,5 @@ public interface MessageService {
     void hideMessage(Long userId, Long msgId);
 
     /** 查询消息已读状态 — 群聊展示已读/未读成员列表 */
-    ReadStatusVO getReadStatus(Long msgId);
+    ReadStatusVO getReadStatus(Long userId, Long msgId);
 }

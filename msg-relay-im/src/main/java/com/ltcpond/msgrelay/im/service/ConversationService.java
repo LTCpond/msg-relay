@@ -8,10 +8,11 @@ import java.util.List;
 public interface ConversationService {
 
     /** 更新会话 — 新消息到达时创建或更新会话记录 */
-    void updateConversation(Long userId, Long targetId, Integer targetType, Long msgId);
+    void updateConversation(Long userId, Long targetId, Integer targetType, Long msgId,
+                            boolean incrementUnread);
 
     /** 标记已读 — 清零未读计数 */
-    void markRead(Long userId, Long targetId);
+    void markRead(Long userId, Long targetId, Integer targetType);
 
     /** 获取用户会话列表 */
     List<Conversation> listConversations(Long userId);

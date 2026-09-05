@@ -24,7 +24,11 @@ public interface GroupMemberIndexMapper {
     GroupMemberIndex selectByGroupAndUser(@Param("groupId") Long groupId,
                                           @Param("userId") Long userId);
 
-    Integer getMaxIndex(@Param("groupId") Long groupId);
+    int ensureSequence(@Param("groupId") Long groupId);
+
+    int allocateNextIndex(@Param("groupId") Long groupId);
+
+    Integer selectLastInsertId();
 
     List<GroupMemberIndex> selectByGroupId(@Param("groupId") Long groupId);
 

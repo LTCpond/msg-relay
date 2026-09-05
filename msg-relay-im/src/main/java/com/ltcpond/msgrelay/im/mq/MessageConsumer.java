@@ -6,6 +6,10 @@ import com.ltcpond.msgrelay.im.model.entity.Message;
 import com.ltcpond.msgrelay.im.observer.MessageObserverManager;
 import com.ltcpond.msgrelay.im.repository.MessageMapper;
 import com.ltcpond.msgrelay.im.service.ConversationService;
+import com.ltcpond.msgrelay.group.service.GroupService;
+import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
+import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
+import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -38,6 +42,12 @@ public class MessageConsumer implements RocketMQListener<String> {
     @Resource
     private MessageObserverManager observerManager;
 
+    @Resource
+    private GroupService groupService;
+
+    @Resource
+    private MultiLevelCache cache;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Resource
@@ -51,30 +61,30 @@ public class MessageConsumer implements RocketMQListener<String> {
         try {
             message = objectMapper.readValue(msg, Message.class);
 
-            // 0. 原子幂等：SET NX，已处理过直接跳过
-            idempotentKey = "mq:consume:" + message.getMsgId();
-            Boolean acquired = redisTemplate.opsForValue()
-                    .setIfAbsent(idempotentKey, "1", 604800, TimeUnit.SECONDS);
-            if (Boolean.FALSE.equals(acquired)) {
+            String doneKey = "mq:consume:done:" + message.getMsgId();
+            if (Boolean.TRUE.equals(redisTemplate.hasKey(doneKey))) {
                 log.info("Message already consumed (idempotent skip): msgId={}", message.getMsgId());
                 return;
             }
+            // processing 锁只覆盖本次处理；done 标记只在全部业务完成后写入。
+            idempotentKey = "mq:consume:processing:" + message.getMsgId();
+            Boolean acquired = redisTemplate.opsForValue()
+                    .setIfAbsent(idempotentKey, "1", 60, TimeUnit.SECONDS);
+            if (Boolean.FALSE.equals(acquired)) {
+                throw new IllegalStateException("消息正在由其他消费者处理");
+            }
 
-            // 1. 更新发送者和接收者的会话（双向，unreadCount 由原子 SQL 保证幂等）
-            conversationService.updateConversation(
-                    message.getSenderId(), message.getReceiverId(),
-                    message.getReceiverType(), message.getMsgId());
-            conversationService.updateConversation(
-                    message.getReceiverId(), message.getSenderId(),
-                    message.getReceiverType(), message.getMsgId());
+            updateConversations(message);
 
             // 2. 更新消息状态为 SENT
-            message.setStatus(1);
-            message.setUpdatedAt(java.time.LocalDateTime.now());
-            messageMapper.updateById(message);
+            messageMapper.advanceStatus(message.getMsgId(), MessageStatus.SENT.getCode());
+            message.setStatus(MessageStatus.SENT.getCode());
+            cache.evict("msg:" + message.getMsgId());
 
             // 3. 推送给在线用户
             observerManager.notifyObservers(message);
+            redisTemplate.opsForValue().set(doneKey, "1", 7, TimeUnit.DAYS);
+            redisTemplate.delete(idempotentKey);
             log.info("Message persisted and pushed: msgId={}", message.getMsgId());
         } catch (JsonProcessingException e) {
             log.error("Failed to deserialize message from RocketMQ", e);
@@ -86,6 +96,20 @@ public class MessageConsumer implements RocketMQListener<String> {
                 redisTemplate.delete(idempotentKey);
             }
             throw e; // 抛出触发 RocketMQ 重试
+        }
+    }
+
+    private void updateConversations(Message message) {
+        if (message.getReceiverType() == ReceiverType.GROUP.getCode()) {
+            groupService.listMembers(message.getReceiverId()).forEach(member ->
+                    conversationService.updateConversation(member.getUserId(), message.getReceiverId(),
+                            ReceiverType.GROUP.getCode(), message.getMsgId(),
+                            !member.getUserId().equals(message.getSenderId())));
+        } else {
+            conversationService.updateConversation(message.getSenderId(), message.getReceiverId(),
+                    ReceiverType.SINGLE.getCode(), message.getMsgId(), false);
+            conversationService.updateConversation(message.getReceiverId(), message.getSenderId(),
+                    ReceiverType.SINGLE.getCode(), message.getMsgId(), true);
         }
     }
 }

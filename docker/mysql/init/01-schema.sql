@@ -79,18 +79,21 @@ CREATE TABLE IF NOT EXISTS t_team_admin (
 CREATE TABLE IF NOT EXISTS t_message (
     id BIGINT NOT NULL PRIMARY KEY COMMENT '主键ID',
     msg_id BIGINT NOT NULL COMMENT '消息ID(雪花算法)',
+    client_msg_id VARCHAR(64) NOT NULL COMMENT '客户端幂等消息ID',
     sender_id BIGINT NOT NULL COMMENT '发送者ID',
     receiver_id BIGINT NOT NULL COMMENT '接收者ID',
     receiver_type TINYINT NOT NULL COMMENT '接收者类型: 1单聊 2群聊',
     msg_type TINYINT NOT NULL COMMENT '消息类型: 1文本 2图片 3文件 4语音 5系统',
     content TEXT COMMENT '消息内容',
     extra_json TEXT COMMENT '扩展信息JSON',
+    media_meta_json TEXT COMMENT '媒体元数据JSON',
     status TINYINT DEFAULT 0 COMMENT '状态:0发送中 1已发送 2已投递 3已读 4已撤回',
     read_count INT DEFAULT 0 COMMENT '已读人数',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted TINYINT DEFAULT 0 COMMENT '逻辑删除',
-    INDEX idx_msg_id (msg_id),
+    UNIQUE KEY uk_msg_id (msg_id),
+    UNIQUE KEY uk_sender_client_msg (sender_id, client_msg_id),
     INDEX idx_sender (sender_id),
     INDEX idx_receiver (receiver_id, receiver_type),
     INDEX idx_created (created_at)
@@ -139,6 +142,18 @@ CREATE TABLE IF NOT EXISTS t_msg_ack (
     INDEX idx_msg_user (msg_id, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='消息ACK记录';
 
+CREATE TABLE IF NOT EXISTS t_msg_read_bitmap (
+    msg_id BIGINT NOT NULL PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    delivered_bitmap VARBINARY(512),
+    delivered_count INT NOT NULL DEFAULT 0,
+    read_bitmap VARBINARY(512),
+    read_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_group_id (group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群消息ACK Bitmap快照';
+
 -- ==================== 群组服务 (group-service) ====================
 
 CREATE TABLE IF NOT EXISTS t_group (
@@ -170,3 +185,33 @@ CREATE TABLE IF NOT EXISTS t_group_member (
     INDEX idx_group (group_id),
     INDEX idx_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群成员表';
+
+CREATE TABLE IF NOT EXISTS t_group_member_index (
+    id BIGINT NOT NULL PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    member_index INT NOT NULL,
+    status TINYINT NOT NULL DEFAULT 1,
+    joined_at DATETIME,
+    left_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_group_user (group_id, user_id),
+    UNIQUE KEY uk_group_member_index (group_id, member_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群成员Bitmap位号';
+
+CREATE TABLE IF NOT EXISTS t_group_member_index_seq (
+    group_id BIGINT NOT NULL PRIMARY KEY,
+    next_index INT NOT NULL DEFAULT -1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群成员Bitmap位号序列';
+
+CREATE TABLE IF NOT EXISTS t_search_index_failure (
+    msg_id BIGINT NOT NULL PRIMARY KEY,
+    document_json JSON NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME NOT NULL,
+    last_error VARCHAR(1000),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_next_retry (next_retry_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ES索引失败补偿表';

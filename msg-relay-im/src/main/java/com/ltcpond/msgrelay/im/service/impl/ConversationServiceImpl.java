@@ -44,30 +44,17 @@ public class ConversationServiceImpl implements ConversationService {
 
     /** 更新会话 — 新消息到达时若会话不存在则创建，否则原子递增未读计数 */
     @Override
-    public void updateConversation(Long userId, Long targetId, Integer targetType, Long msgId) {
-        Conversation conv = getConversation(userId, targetId, targetType);
-        if (conv == null) {
-            conv = new Conversation();
-            conv.setId(idGenerator.nextId());
-            conv.setUserId(userId);
-            conv.setTargetId(targetId);
-            conv.setTargetType(targetType);
-            conv.setLastMsgId(msgId);
-            conv.setUnreadCount(1);
-            conv.setDeleted(0);
-            conv.setCreatedAt(LocalDateTime.now());
-            conv.setUpdatedAt(LocalDateTime.now());
-            conversationMapper.insert(conv);
-        } else {
-            // 原子 SQL: WHERE last_msg_id < msgId 保证 Consumer 重试时不会重复累加
-            conversationMapper.updateConversationByMsg(userId, targetId, msgId);
-        }
+    public void updateConversation(Long userId, Long targetId, Integer targetType, Long msgId,
+                                   boolean incrementUnread) {
+        conversationMapper.upsertByMessage(idGenerator.nextId(), userId, targetId, targetType,
+                msgId, incrementUnread);
+        cache.evict("conv:list:" + userId);
     }
 
     /** 标记已读 — 清零未读计数，群聊场景批量 ACK 未读消息（使用 Bitmap） */
     @Override
-    public void markRead(Long userId, Long targetId) {
-        Conversation conv = conversationMapper.selectByUserAndTarget(userId, targetId);
+    public void markRead(Long userId, Long targetId, Integer targetType) {
+        Conversation conv = conversationMapper.selectByUserAndTarget(userId, targetId, targetType);
         if (conv == null) {
             return;
         }
@@ -90,6 +77,7 @@ public class ConversationServiceImpl implements ConversationService {
         conv.setLastReadTime(LocalDateTime.now());
         conv.setUpdatedAt(LocalDateTime.now());
         conversationMapper.updateById(conv);
+        cache.evict("conv:list:" + userId);
     }
 
     /** 会话列表 — 三级缓存（Caffeine → Redis → DB） */
@@ -105,6 +93,6 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     public Conversation getConversation(Long userId, Long targetId, Integer targetType) {
         // 低频单条查询，直接走 DB
-        return conversationMapper.selectByUserAndTarget(userId, targetId);
+        return conversationMapper.selectByUserAndTarget(userId, targetId, targetType);
     }
 }

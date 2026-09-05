@@ -11,6 +11,8 @@ public class Message extends BaseEntity {
 
     /** 全局唯一消息 ID（雪花算法） */
     private Long msgId;
+    /** 客户端幂等消息 ID，与 senderId 组成唯一键 */
+    private String clientMsgId;
     /** 发送者 UID */
     private Long senderId;
     /** 接收者 ID（用户 ID 或群 ID，由 receiverType 区分） */
@@ -25,6 +27,6 @@ public class Message extends BaseEntity {
     private String extraJson;
     /** 媒体元数据 JSON（图片宽高、语音时长、文件名/大小） */
     private String mediaMetaJson;
-    /** 消息状态: 0=发送中 1=已发送 2=已投递 3=已读 4=已撤回 5=群聊 */
+    /** 投递状态: 0=发送中 1=已发送 2=已投递 3=已读 4=已撤回；群聊由 receiverType 区分 */
     private Integer status;
 }

@@ -2,19 +2,16 @@ package com.ltcpond.msgrelay.im.observer;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ltcpond.msgrelay.common.constants.RedisChannel;
 import com.ltcpond.msgrelay.im.model.entity.Message;
 import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
-import com.ltcpond.msgrelay.im.netty.SessionManager;
+import com.ltcpond.msgrelay.im.netty.NodePushRouter;
 import com.ltcpond.msgrelay.group.service.GroupService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * WebSocket 推送观察者 — 消息通过 WebSocket 实时推送到在线用户
@@ -29,13 +26,10 @@ import java.util.Set;
 public class WebSocketPushObserver implements MessagePushObserver {
 
     @Resource
-    private SessionManager sessionManager;
+    private NodePushRouter pushRouter;
 
     @Resource
     private GroupService groupService;
-
-    @Autowired(required = false)
-    private RedisTemplate<String, Object> kickRedisTemplate;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -44,19 +38,12 @@ public class WebSocketPushObserver implements MessagePushObserver {
         if (ReceiverType.GROUP.getCode() == message.getReceiverType()) {
             handleGroupMessage(message);
         } else {
-            handleSingleMessage(message, message.getReceiverId());
-        }
-        // 多端同步：推送给发送方的其他设备
-        pushToSenderOtherDevices(message);
-    }
-
-    /** 单聊推送 — 序列化完整消息推给目标用户 */
-    private void handleSingleMessage(Message message, Long targetUserId) {
-        try {
-            String json = buildMessageJson(message);
-            pushToUser(targetUserId, json);
-        } catch (JsonProcessingException e) {
-            log.error("Failed to serialize message", e);
+            try {
+                pushRouter.pushToUsers(Set.of(message.getReceiverId(), message.getSenderId()),
+                        buildMessageJson(message));
+            } catch (JsonProcessingException e) {
+                log.error("Failed to serialize message", e);
+            }
         }
     }
 
@@ -66,49 +53,31 @@ public class WebSocketPushObserver implements MessagePushObserver {
         Set<String> memberIds = groupService.getMemberIds(groupId);
 
         if (groupService.isLargeGroup(groupId)) {
-            pushGroupNotify(groupId, memberIds, message.getSenderId());
+            pushGroupNotify(message, memberIds);
         } else {
-            for (String memberIdStr : memberIds) {
-                Long targetUserId = Long.valueOf(memberIdStr);
-                if (targetUserId.equals(message.getSenderId())) continue;
-                handleSingleMessage(message, targetUserId);
+            try {
+                Set<Long> targets = memberIds.stream().map(Long::valueOf).collect(Collectors.toSet());
+                pushRouter.pushToUsers(targets, buildMessageJson(message));
+            } catch (JsonProcessingException e) {
+                log.error("Failed to serialize group message", e);
             }
         }
     }
 
     /** 大群轻量级通知 — 客户端收到通知后主动拉取消息 */
-    private void pushGroupNotify(Long groupId, Set<String> memberIds, Long senderId) {
+    private void pushGroupNotify(Message message, Set<String> memberIds) {
         try {
             String json = objectMapper.writeValueAsString(Map.of(
                     "type", "group_notify",
-                    "groupId", groupId
+                    "groupId", message.getReceiverId(),
+                    "lastMsgId", message.getMsgId()
             ));
-            for (String memberIdStr : memberIds) {
-                Long targetUserId = Long.valueOf(memberIdStr);
-                if (targetUserId.equals(senderId)) continue;
-                pushToUser(targetUserId, json);
-            }
+            Set<Long> recipients = memberIds.stream().map(Long::valueOf)
+                    .filter(userId -> !userId.equals(message.getSenderId())).collect(Collectors.toSet());
+            pushRouter.pushToUsers(recipients, json);
+            pushRouter.pushToUser(message.getSenderId(), buildMessageJson(message));
         } catch (JsonProcessingException e) {
             log.error("Failed to serialize group notify", e);
-        }
-    }
-
-    /** 多端同步 — 推送给发送方的其他设备 */
-    private void pushToSenderOtherDevices(Message message) {
-        try {
-            String json = buildMessageJson(message);
-            pushToUser(message.getSenderId(), json);
-        } catch (JsonProcessingException e) {
-            log.error("Failed to push to sender other devices", e);
-        }
-    }
-
-    /** 通过 Redis Pub/Sub 发布推送指令，所有节点订阅后各自本地投递 */
-    private void pushToUser(Long userId, String json) {
-        if (kickRedisTemplate != null) {
-            kickRedisTemplate.convertAndSend(RedisChannel.PUSH_CHANNEL, userId + "|" + json);
-        } else {
-            sessionManager.pushToUser(userId, json);
         }
     }
 

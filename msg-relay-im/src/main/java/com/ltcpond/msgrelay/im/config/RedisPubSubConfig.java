@@ -5,6 +5,7 @@ import com.ltcpond.msgrelay.im.netty.KickChannelHandler;
 import com.ltcpond.msgrelay.im.netty.PushMessageHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -29,8 +30,8 @@ public class RedisPubSubConfig {
     }
 
     @Bean
-    public ChannelTopic pushTopic() {
-        return new ChannelTopic(RedisChannel.PUSH_CHANNEL);
+    public ChannelTopic pushTopic(@Value("${msg-relay.netty.node-id:node-1}") String nodeId) {
+        return new ChannelTopic(RedisChannel.pushChannel(nodeId));
     }
 
     @Bean

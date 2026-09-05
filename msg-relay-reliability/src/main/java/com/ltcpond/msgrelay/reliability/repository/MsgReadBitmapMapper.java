@@ -20,4 +20,10 @@ public interface MsgReadBitmapMapper {
     int incrementReadCount(@Param("msgId") Long msgId);
 
     MsgReadBitmap selectByMsgId(@Param("msgId") Long msgId);
+
+    int upsertSnapshot(@Param("msgId") Long msgId, @Param("groupId") Long groupId,
+                       @Param("deliveredBitmap") byte[] deliveredBitmap,
+                       @Param("deliveredCount") int deliveredCount,
+                       @Param("readBitmap") byte[] readBitmap,
+                       @Param("readCount") int readCount);
 }

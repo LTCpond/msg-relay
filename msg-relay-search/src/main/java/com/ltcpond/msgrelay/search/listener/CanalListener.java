@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.sql.Types;
 
 /**
  * Canal Binlog 订阅 → 同步消息到 ES
@@ -31,11 +33,11 @@ import java.util.concurrent.Executors;
  * ACK 策略（safe 模式）：
  * - 成功写入 ES 后才 ack，失败则 rollback(batchId) 重试
  * - 指数退避：重试间隔 1s → 2s → 4s → 8s → 16s（上限 30s）
- * - 最大重试 5 次后 ack 继续，避免 listener 卡死；同时记录 ERROR 日志供人工干预
+ * - 最大重试 5 次后写入失败表再 ack，由定时 reconciliation 持续重放
  *
  * 与旧方案的区别：
  * - 旧方案：processEntries 失败也直接 ack，导致索引永久丢失
- * - 新方案：失败 rollback 重试，最多 5 次后 ack（丢弃当前 batch 但不阻塞后续数据）
+ * - 新方案：连接外层持续重连；失败 batch 进入可重放失败表，不留下永久索引缺口
  */
 @Slf4j
 @Component
@@ -49,6 +51,12 @@ public class CanalListener {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile boolean running = true;
+    private volatile CanalConnector connector;
+
+    @Resource
+    private SearchIndexFailureRepository failureRepository;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final String INDEX_NAME = "message_index";
 
@@ -69,6 +77,9 @@ public class CanalListener {
     public void destroy() {
         running = false;
         executor.shutdownNow();
+        if (connector != null) {
+            connector.disconnect();
+        }
         log.info("CanalListener 已停止");
     }
 
@@ -110,52 +121,45 @@ public class CanalListener {
      * 关键变更：ack 策略从"无条件 ack"改为"成功才 ack，失败 rollback 重试"
      */
     private void startListener() {
-        CanalConnector connector = CanalConnectors.newSingleConnector(
+        while (running) {
+            try {
+                connectAndConsume();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                if (running) log.error("Canal 监听异常，5 秒后重连", e);
+            } finally {
+                if (connector != null) connector.disconnect();
+                connector = null;
+            }
+            if (running) {
+                try { Thread.sleep(5000); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+    }
+
+    private void connectAndConsume() throws Exception {
+        connector = CanalConnectors.newSingleConnector(
                 new InetSocketAddress(canalProperties.getHost(), canalProperties.getPort()),
                 canalProperties.getDestination(), "", "");
-
-        try {
-            connector.connect();
-            connector.subscribe(canalProperties.getSubscribe());
-            connector.rollback();
-            log.info("Canal 监听已启动，订阅: {}", canalProperties.getSubscribe());
-
-            while (running) {
-                Message message = connector.getWithoutAck(100);
-                long batchId = message.getId();
-                int size = message.getEntries().size();
-
-                if (batchId == -1 || size == 0) {
-                    // 无新数据，等待 1 秒后继续拉取
-                    Thread.sleep(1000);
-                    continue;
-                }
-
-                // 处理当前 batch，失败则重试
-                boolean success = processWithRetry(message, connector, batchId);
-
-                if (success) {
-                    // 成功：ack 告诉 Canal 这批数据已处理
-                    connector.ack(batchId);
-                    log.debug("batch {} ack 完成，条数={}", batchId, size);
-                } else {
-                    // 重试耗尽：ack 继续，避免 listener 永久卡死
-                    // 记录 ERROR 日志，需人工介入检查 ES 数据一致性
-                    log.error("batch {} 重试 {} 次仍失败，已 ack 跳过（需人工检查 ES 数据一致性）",
-                            batchId, MAX_RETRY);
-                    connector.ack(batchId);
-                }
+        connector.connect();
+        connector.subscribe(canalProperties.getSubscribe());
+        connector.rollback();
+        log.info("Canal 监听已启动，订阅: {}", canalProperties.getSubscribe());
+        while (running) {
+            Message message = connector.getWithoutAck(100);
+            long batchId = message.getId();
+            if (batchId == -1 || message.getEntries().isEmpty()) {
+                Thread.sleep(1000);
+                continue;
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.info("Canal 监听被中断");
-        } catch (Exception e) {
-            if (running) {
-                log.error("Canal 监听异常，将重连", e);
+            if (!processWithRetry(message, batchId)) {
+                persistFailures(message.getEntries(), "ES write failed after " + MAX_RETRY + " attempts");
+                log.error("batch {} 重试耗尽，已写入失败表等待 reconciliation", batchId);
             }
-        } finally {
-            connector.disconnect();
-            log.info("Canal 连接已断开");
+            connector.ack(batchId);
         }
     }
 
@@ -164,7 +168,7 @@ public class CanalListener {
      *
      * @return true=处理成功，false=重试耗尽仍失败
      */
-    private boolean processWithRetry(Message message, CanalConnector connector, long batchId) {
+    private boolean processWithRetry(Message message, long batchId) {
         long backoff = INITIAL_BACKOFF_MS;
 
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
@@ -174,9 +178,6 @@ public class CanalListener {
             } catch (Exception e) {
                 log.warn("batch {} 处理失败，第 {}/{} 次重试，{}ms 后重试",
                         batchId, attempt, MAX_RETRY, backoff, e);
-
-                // 失败：rollback 让 Canal 重新投递该 batch
-                connector.rollback(batchId);
 
                 try {
                     Thread.sleep(backoff);
@@ -191,6 +192,24 @@ public class CanalListener {
         }
 
         return false; // 重试耗尽
+    }
+
+    private void persistFailures(List<CanalEntry.Entry> entries, String error) throws Exception {
+        for (CanalEntry.Entry entry : entries) {
+            if (entry.getEntryType() != CanalEntry.EntryType.ROWDATA
+                    || !"t_message".equals(entry.getHeader().getTableName())) continue;
+            CanalEntry.RowChange change = CanalEntry.RowChange.parseFrom(entry.getStoreValue());
+            if (change.getEventType() != CanalEntry.EventType.INSERT
+                    && change.getEventType() != CanalEntry.EventType.UPDATE) continue;
+            for (CanalEntry.RowData row : change.getRowDatasList()) {
+                Map<String, Object> doc = toDocument(row.getAfterColumnsList());
+                Object msgId = doc.get("msg_id");
+                if (msgId != null) {
+                    failureRepository.save(Long.valueOf(msgId.toString()),
+                            objectMapper.writeValueAsString(doc), error);
+                }
+            }
+        }
     }
 
     /**
@@ -225,14 +244,8 @@ public class CanalListener {
      * 注意：写入失败时抛出异常，由 processWithRetry 捕获并重试
      */
     private void syncToES(List<CanalEntry.Column> columns) throws Exception {
-        Map<String, Object> doc = new HashMap<>();
-        String msgId = null;
-        for (CanalEntry.Column column : columns) {
-            doc.put(column.getName(), column.getValue());
-            if ("msg_id".equals(column.getName())) {
-                msgId = column.getValue();
-            }
-        }
+        Map<String, Object> doc = toDocument(columns);
+        String msgId = doc.get("msg_id") != null ? doc.get("msg_id").toString() : null;
 
         if (msgId != null && !doc.isEmpty()) {
             final String finalMsgId = msgId;
@@ -245,5 +258,30 @@ public class CanalListener {
             elasticsearchClient.index(request);
             log.debug("同步消息到 ES: msgId={}", finalMsgId);
         }
+    }
+
+    private Map<String, Object> toDocument(List<CanalEntry.Column> columns) {
+        Map<String, Object> doc = new HashMap<>();
+        for (CanalEntry.Column column : columns) {
+            String value = column.getValue();
+            Object typedValue = value;
+            if (!column.getIsNull()) {
+                try {
+                    typedValue = switch (column.getSqlType()) {
+                        case Types.BIGINT -> Long.valueOf(value);
+                        case Types.INTEGER, Types.SMALLINT, Types.TINYINT -> Integer.valueOf(value);
+                        case Types.FLOAT, Types.REAL, Types.DOUBLE, Types.DECIMAL, Types.NUMERIC ->
+                                Double.valueOf(value);
+                        default -> value;
+                    };
+                } catch (NumberFormatException ignored) {
+                    typedValue = value;
+                }
+            } else {
+                typedValue = null;
+            }
+            doc.put(column.getName(), typedValue);
+        }
+        return doc;
     }
 }

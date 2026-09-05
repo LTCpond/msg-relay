@@ -3,7 +3,7 @@ package com.ltcpond.msgrelay.im.model.enums;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
-/** 消息状态枚举 — 状态机: SENDING → SENT → DELIVERED → READ，任意状态可 → RECALLED，群聊 → GROUP */
+/** 投递状态枚举 — SENDING → SENT → DELIVERED → READ，任意状态可 → RECALLED。 */
 @Getter
 @AllArgsConstructor
 public enum MessageStatus {
@@ -12,8 +12,7 @@ public enum MessageStatus {
     SENT(1, "已发送"),
     DELIVERED(2, "已投递"),
     READ(3, "已读"),
-    RECALLED(4, "已撤回"),
-    GROUP(5, "群聊");  // 群聊状态，不参与三阶段判断，用 Bitmap 记录投递/已读
+    RECALLED(4, "已撤回");
 
     private final int code;
     private final String desc;

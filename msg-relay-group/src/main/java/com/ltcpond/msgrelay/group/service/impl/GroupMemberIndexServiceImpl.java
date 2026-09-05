@@ -7,6 +7,7 @@ import com.ltcpond.msgrelay.group.service.GroupMemberIndexService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
@@ -21,6 +22,7 @@ public class GroupMemberIndexServiceImpl implements GroupMemberIndexService {
     private SnowflakeIdGenerator idGenerator;
 
     @Override
+    @Transactional
     public int assignMemberIndex(Long groupId, Long userId) {
         // 检查是否已有位序号（退群后重新入群）
         GroupMemberIndex existing = memberIndexMapper.selectByGroupAndUser(groupId, userId);
@@ -36,9 +38,13 @@ public class GroupMemberIndexServiceImpl implements GroupMemberIndexService {
             return existing.getMemberIndex();
         }
 
-        // 分配新位序号（只增不复用）
-        Integer maxIndex = memberIndexMapper.getMaxIndex(groupId);
-        int newIndex = (maxIndex == null) ? 0 : maxIndex + 1;
+        // 按群原子递增序列分配，避免 MAX(index)+1 的并发重复。
+        memberIndexMapper.ensureSequence(groupId);
+        memberIndexMapper.allocateNextIndex(groupId);
+        int newIndex = memberIndexMapper.selectLastInsertId();
+        if (newIndex >= BitmapAckServiceImpl.MAX_MEMBER_COUNT) {
+            throw new IllegalStateException("群成员位号已超过 Bitmap 容量: " + groupId);
+        }
 
         GroupMemberIndex record = new GroupMemberIndex();
         record.setId(idGenerator.nextId());
@@ -62,6 +68,7 @@ public class GroupMemberIndexServiceImpl implements GroupMemberIndexService {
     }
 
     @Override
+    @Transactional
     public void handleRejoinGroup(Long groupId, Long userId) {
         GroupMemberIndex existing = memberIndexMapper.selectByGroupAndUser(groupId, userId);
 

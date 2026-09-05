@@ -6,7 +6,7 @@ import java.util.List;
  * Bitmap ACK 服务 — 群聊消息投递/已读状态管理
  *
  * 三阶段 ACK:
- * - SENT: 消息落库即为发送成功（status=5 GROUP）
+ * - SENT: 消息投递事件已由 Consumer 接受（status=1）
  * - DELIVERED: 消息推送到客户端，更新 delivered_bitmap
  * - READ: 用户已读，更新 read_bitmap
  */

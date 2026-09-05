@@ -20,6 +20,12 @@ public interface MessageMapper {
     /** 根据全局 msgId 查询消息 */
     Message selectByMsgId(@Param("msgId") Long msgId);
 
+    Message selectBySenderAndClientMsgId(@Param("senderId") Long senderId,
+                                         @Param("clientMsgId") String clientMsgId);
+
+    /** 只允许状态向前推进，且不会覆盖 RECALLED。 */
+    int advanceStatus(@Param("msgId") Long msgId, @Param("newStatus") int newStatus);
+
     /** 查询历史消息 — 分页拉取，支持单聊和群聊 */
     List<Message> selectHistory(@Param("userId") Long userId, @Param("targetId") Long targetId,
                                 @Param("receiverType") Integer receiverType,

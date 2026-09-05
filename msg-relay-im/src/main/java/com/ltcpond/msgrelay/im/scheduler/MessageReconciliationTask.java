@@ -5,6 +5,10 @@ import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
 import com.ltcpond.msgrelay.im.observer.MessageObserverManager;
 import com.ltcpond.msgrelay.im.repository.MessageMapper;
 import com.ltcpond.msgrelay.im.service.ConversationService;
+import com.ltcpond.msgrelay.group.service.GroupService;
+import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
+import com.ltcpond.msgrelay.common.lock.LockTemplate;
+import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -33,6 +37,15 @@ public class MessageReconciliationTask {
     @Resource
     private MessageObserverManager observerManager;
 
+    @Resource
+    private GroupService groupService;
+
+    @Resource
+    private LockTemplate lockTemplate;
+
+    @Resource
+    private MultiLevelCache cache;
+
     /** 每小时扫描一次 */
     @Scheduled(fixedDelay = 3_600_000)
     public void reconcileStaleMessages() {
@@ -48,24 +61,37 @@ public class MessageReconciliationTask {
             log.warn("发现 {} 条超时未投递消息，直接执行补偿", staleMessages.size());
             for (Message msg : staleMessages) {
                 try {
-                    // 直接执行 Consumer 业务逻辑（不重新 INSERT）
-                    conversationService.updateConversation(
-                            msg.getSenderId(), msg.getReceiverId(),
-                            msg.getReceiverType(), msg.getMsgId());
-                    conversationService.updateConversation(
-                            msg.getReceiverId(), msg.getSenderId(),
-                            msg.getReceiverType(), msg.getMsgId());
-                    msg.setStatus(MessageStatus.SENT.getCode());
-                    msg.setUpdatedAt(LocalDateTime.now());
-                    messageMapper.updateById(msg);
-                    observerManager.notifyObservers(msg);
-                    log.info("已补偿处理超时消息: msgId={}", msg.getMsgId());
+                    lockTemplate.executeWithLock("message:reconcile:" + msg.getMsgId(), 1, 30, () -> {
+                        Message current = messageMapper.selectByMsgId(msg.getMsgId());
+                        if (current == null || current.getStatus() != MessageStatus.SENDING.getCode()) return null;
+                        updateConversations(current);
+                        messageMapper.advanceStatus(current.getMsgId(), MessageStatus.SENT.getCode());
+                        current.setStatus(MessageStatus.SENT.getCode());
+                        cache.evict("msg:" + current.getMsgId());
+                        observerManager.notifyObservers(current);
+                        log.info("已补偿处理超时消息: msgId={}", current.getMsgId());
+                        return null;
+                    });
                 } catch (Exception e) {
                     log.error("补偿处理失败: msgId={}", msg.getMsgId(), e);
                 }
             }
         } catch (Exception e) {
             log.error("MessageReconciliationTask 执行异常", e);
+        }
+    }
+
+    private void updateConversations(Message message) {
+        if (message.getReceiverType() == ReceiverType.GROUP.getCode()) {
+            groupService.listMembers(message.getReceiverId()).forEach(member ->
+                    conversationService.updateConversation(member.getUserId(), message.getReceiverId(),
+                            ReceiverType.GROUP.getCode(), message.getMsgId(),
+                            !member.getUserId().equals(message.getSenderId())));
+        } else {
+            conversationService.updateConversation(message.getSenderId(), message.getReceiverId(),
+                    ReceiverType.SINGLE.getCode(), message.getMsgId(), false);
+            conversationService.updateConversation(message.getReceiverId(), message.getSenderId(),
+                    ReceiverType.SINGLE.getCode(), message.getMsgId(), true);
         }
     }
 }

@@ -12,10 +12,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-import org.springframework.data.redis.core.RedisTemplate;
-import java.util.concurrent.TimeUnit;
-import com.ltcpond.msgrelay.common.exception.BusinessException;
-import com.ltcpond.msgrelay.common.result.ResultCode;
 
 /** 消息控制器 — 消息发送、撤回、隐藏、历史查询、已读状态 */
 @RestController
@@ -25,31 +21,13 @@ public class MessageController {
     @Resource
     private MessageService messageService;
 
-    @Resource
-    private RedisTemplate<String, Object> redisTemplate;
-
-    /** 发送消息 — 基于内容指纹的 Redis 防抖 1 秒，执行失败自动释放锁 */
+    /** 发送消息 — clientMsgId + 数据库唯一键保证网络重试返回同一条消息 */
     @PostMapping("/send")
     public Result<MessageVO> send(@Valid @RequestBody SendMessageRequest request,
                                    HttpServletRequest httpRequest) {
         Long userId = (Long) httpRequest.getAttribute("userId");
 
-        // 用内容字段的确定性指纹替代 request.hashCode()
-        int contentFingerprint = java.util.Objects.hash(
-                request.getReceiverId(), request.getReceiverType(), request.getContent());
-        String idempotentKey = "idempotent:msg:send:" + userId + ":" + contentFingerprint;
-        Boolean locked = redisTemplate.opsForValue().setIfAbsent(idempotentKey, "1", 1, TimeUnit.SECONDS);
-
-        if (Boolean.FALSE.equals(locked)) {
-            throw new BusinessException(ResultCode.CONFLICT, "发送过于频繁，请稍后再试");
-        }
-
-        try {
-            return Result.ok(messageService.send(userId, request));
-        } catch (Exception e) {
-            redisTemplate.delete(idempotentKey);
-            throw e;
-        }
+        return Result.ok(messageService.send(userId, request));
     }
 
     /** 撤回消息 — 仅发送者可撤回，2 小时内有效 */
@@ -81,9 +59,10 @@ public class MessageController {
         return Result.ok(messageService.queryHistory(userId, targetId, receiverType, beforeMsgId, limit));
     }
 
-    /** 查询消息已读状态 — 群聊展示已读/未读成员列表 */
+    /** 查询消息已读状态 — 仅会话参与者可查看 */
     @GetMapping("/{msgId}/read-status")
-    public Result<ReadStatusVO> readStatus(@PathVariable Long msgId) {
-        return Result.ok(messageService.getReadStatus(msgId));
+    public Result<ReadStatusVO> readStatus(@PathVariable Long msgId, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        return Result.ok(messageService.getReadStatus(userId, msgId));
     }
 }

@@ -55,6 +55,7 @@ msg-relay:
   netty:
     ws-port: 8090
     node-id: ${NODE_ID:node-1}
+    business-threads: ${NETTY_BUSINESS_THREADS:16}
     heartbeat:
       enabled: true                  # 是否启用控制帧心跳（替代旧的文本 PING/PONG）
       interval-seconds: 20           # 服务端发 Ping 控制帧的周期（T）

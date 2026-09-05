@@ -41,8 +41,19 @@
         WHERE group_id = #{groupId} AND user_id = #{userId}
     </select>
 
-    <select id="getMaxIndex" resultType="java.lang.Integer">
-        SELECT MAX(member_index) FROM t_group_member_index WHERE group_id = #{groupId}
+    <insert id="ensureSequence">
+        INSERT IGNORE INTO t_group_member_index_seq (group_id, next_index)
+        VALUES (#{groupId}, -1)
+    </insert>
+
+    <update id="allocateNextIndex">
+        UPDATE t_group_member_index_seq
+        SET next_index = LAST_INSERT_ID(next_index + 1)
+        WHERE group_id = #{groupId}
+    </update>
+
+    <select id="selectLastInsertId" resultType="java.lang.Integer">
+        SELECT LAST_INSERT_ID()
     </select>
 
     <select id="selectByGroupId" resultMap="BaseResultMap">

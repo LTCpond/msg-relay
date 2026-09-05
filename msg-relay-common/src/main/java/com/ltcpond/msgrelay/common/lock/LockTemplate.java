@@ -2,6 +2,7 @@ package com.ltcpond.msgrelay.common.lock;
 
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -21,6 +22,13 @@ import java.util.function.Supplier;
 @Component
 public class LockTemplate {
 
+    private static final DefaultRedisScript<Long> RELEASE_SCRIPT = new DefaultRedisScript<>("""
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            end
+            return 0
+            """, Long.class);
+
     @Resource
     private RedisTemplate<String, Object> redisTemplate;
 
@@ -31,8 +39,13 @@ public class LockTemplate {
         long deadline = System.currentTimeMillis() + waitSeconds * 1000;
 
         while (System.currentTimeMillis() < deadline) {
-            Boolean acquired = redisTemplate.opsForValue()
-                    .setIfAbsent(key, lockId, leaseSeconds, TimeUnit.SECONDS);
+            Boolean acquired;
+            try {
+                acquired = redisTemplate.opsForValue()
+                        .setIfAbsent(key, lockId, leaseSeconds, TimeUnit.SECONDS);
+            } catch (RuntimeException e) {
+                throw new LockAcquisitionException("获取锁失败: " + lockKey, e);
+            }
             if (Boolean.TRUE.equals(acquired)) {
                 try {
                     return supplier.get();
@@ -44,17 +57,14 @@ public class LockTemplate {
                 Thread.sleep(50);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new RuntimeException("获取锁被中断: " + lockKey, e);
+                throw new LockAcquisitionException("获取锁被中断: " + lockKey, e);
             }
         }
-        throw new RuntimeException("获取锁超时: " + lockKey);
+        throw new LockAcquisitionException("获取锁超时: " + lockKey);
     }
 
-    /** 比对 lockId 再删除，防止误删其他线程持有的锁 */
+    /** Lua 原子比对并删除，避免 GET 与 DEL 之间锁过期后误删新持有者的锁。 */
     private void release(String key, String lockId) {
-        String current = (String) redisTemplate.opsForValue().get(key);
-        if (lockId.equals(current)) {
-            redisTemplate.delete(key);
-        }
+        redisTemplate.execute(RELEASE_SCRIPT, java.util.Collections.singletonList(key), lockId);
     }
 }

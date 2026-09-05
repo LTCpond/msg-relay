@@ -42,4 +42,14 @@
         SELECT * FROM t_msg_read_bitmap WHERE msg_id = #{msgId}
     </select>
 
+    <insert id="upsertSnapshot">
+        INSERT INTO t_msg_read_bitmap
+            (msg_id, group_id, delivered_bitmap, delivered_count, read_bitmap, read_count, created_at, updated_at)
+        VALUES
+            (#{msgId}, #{groupId}, #{deliveredBitmap}, #{deliveredCount}, #{readBitmap}, #{readCount}, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            delivered_bitmap = VALUES(delivered_bitmap), delivered_count = VALUES(delivered_count),
+            read_bitmap = VALUES(read_bitmap), read_count = VALUES(read_count), updated_at = NOW()
+    </insert>
+
 </mapper>

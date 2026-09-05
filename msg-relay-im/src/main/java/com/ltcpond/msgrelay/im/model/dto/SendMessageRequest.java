@@ -2,11 +2,17 @@ package com.ltcpond.msgrelay.im.model.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 /** 发送消息请求 DTO */
 @Data
 public class SendMessageRequest {
+
+    /** 客户端生成的稳定消息 ID；网络超时重试时必须复用。 */
+    @NotBlank(message = "clientMsgId 不能为空")
+    @Size(max = 64, message = "clientMsgId 最长 64 个字符")
+    private String clientMsgId;
 
     /** 接收者 ID（用户或群） */
     @NotNull(message = "接收者不能为空")

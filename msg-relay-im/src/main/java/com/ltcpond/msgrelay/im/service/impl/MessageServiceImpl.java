@@ -2,6 +2,7 @@ package com.ltcpond.msgrelay.im.service.impl;
 
 import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
 import com.ltcpond.msgrelay.common.utils.SnowflakeIdGenerator;
+import com.ltcpond.msgrelay.common.lock.LockTemplate;
 import com.ltcpond.msgrelay.im.builder.MessageBuilder;
 import com.ltcpond.msgrelay.im.model.dto.SendMessageRequest;
 import com.ltcpond.msgrelay.im.model.entity.Message;
@@ -13,20 +14,19 @@ import com.ltcpond.msgrelay.im.model.vo.ReadStatusVO;
 import com.ltcpond.msgrelay.im.mq.MessageProducer;
 import com.ltcpond.msgrelay.common.exception.BusinessException;
 import com.ltcpond.msgrelay.common.result.ResultCode;
-import com.ltcpond.msgrelay.group.model.entity.GroupMember;
 import com.ltcpond.msgrelay.group.service.BitmapAckService;
 import com.ltcpond.msgrelay.group.service.GroupService;
 import com.ltcpond.msgrelay.im.repository.MessageMapper;
-import com.ltcpond.msgrelay.im.netty.SessionManager;
+import com.ltcpond.msgrelay.im.netty.NodePushRouter;
 import com.ltcpond.msgrelay.im.repository.UserMessageHideMapper;
 import com.ltcpond.msgrelay.im.service.MessageService;
+import com.ltcpond.msgrelay.im.service.MessageAccessService;
 import com.ltcpond.msgrelay.im.strategy.MessageStrategyFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ltcpond.msgrelay.user.service.UserService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.TransactionSendResult;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -49,7 +49,7 @@ import java.util.stream.Collectors;
  * - getByMsgId: ACK/MQ 消费时高频单条查消息，Caffeine L1 命中后跳过 Redis 和 DB
  *
  * 消息状态机: SENDING(0) → SENT(1) → DELIVERED(2) → READ(3)
- * 群聊: SENDING(0) → GROUP(5)（用 Bitmap 记录投递/已读）
+ * 群聊同样使用投递状态机，消息类别由 receiverType 区分；成员 ACK 使用 Bitmap。
  * 撤回: 任意状态 → RECALLED(4)
  */
 @Slf4j
@@ -72,10 +72,7 @@ public class MessageServiceImpl implements MessageService {
     private UserMessageHideMapper hideMapper;
 
     @Resource
-    private RedisTemplate<String, Object> redisTemplate;
-
-    @Resource
-    private SessionManager sessionManager;
+    private NodePushRouter pushRouter;
 
     @Resource
     private GroupService groupService;
@@ -89,6 +86,12 @@ public class MessageServiceImpl implements MessageService {
     @Resource
     private BitmapAckService bitmapAckService;
 
+    @Resource
+    private MessageAccessService messageAccessService;
+
+    @Resource
+    private LockTemplate lockTemplate;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final long MSG_CACHE_TTL = 600;
@@ -96,10 +99,26 @@ public class MessageServiceImpl implements MessageService {
     /** 发送消息 — 策略处理 → 建造者构造 → 事务落库 → MQ 投递，立即返回 VO */
     @Override
     public MessageVO send(Long senderId, SendMessageRequest request) {
-        // 1. 策略模式：按消息类型分发处理，得到处理后的 content
+        messageAccessService.assertCanAccessConversation(senderId, request.getReceiverId(), request.getReceiverType());
+        String lockKey = "msg:send:" + senderId + ":" + request.getClientMsgId();
+        return lockTemplate.executeWithLock(lockKey, 3, 15, () -> sendIdempotently(senderId, request));
+    }
+
+    private MessageVO sendIdempotently(Long senderId, SendMessageRequest request) {
         String processedContent = strategyFactory.getStrategy(request.getMsgType())
                 .process(senderId, request);
-
+        Message existing = messageMapper.selectBySenderAndClientMsgId(senderId, request.getClientMsgId());
+        if (existing != null) {
+            if (!existing.getReceiverId().equals(request.getReceiverId())
+                    || !existing.getReceiverType().equals(request.getReceiverType())
+                    || !existing.getMsgType().equals(request.getMsgType())
+                    || !java.util.Objects.equals(existing.getContent(), processedContent)
+                    || !java.util.Objects.equals(existing.getExtraJson(), request.getExtraJson())
+                    || !java.util.Objects.equals(existing.getMediaMetaJson(), request.getMediaMetaJson())) {
+                throw new BusinessException(ResultCode.CONFLICT, "clientMsgId 已被另一条消息使用");
+            }
+            return toVO(existing);
+        }
         // 2. 建造者模式：构造消息体
         Message message = MessageBuilder.builder()
                 .sender(senderId)
@@ -111,13 +130,10 @@ public class MessageServiceImpl implements MessageService {
                 .build();
         message.setId(idGenerator.nextId());
         message.setMsgId(idGenerator.nextId());
+        message.setClientMsgId(request.getClientMsgId());
         message.setDeleted(0);
-        // 设置消息状态：单聊用 SENT，群聊用 GROUP
-        if (request.getReceiverType() == 1) {
-            message.setStatus(MessageStatus.SENT.getCode());
-        } else {
-            message.setStatus(MessageStatus.GROUP.getCode());
-        }
+        // 本地事务先持久化 SENDING；Consumer 完成会话与推送链路后推进到 SENT。
+        message.setStatus(MessageStatus.SENDING.getCode());
         message.setCreatedAt(LocalDateTime.now());
         message.setUpdatedAt(LocalDateTime.now());
         // 1. 使用 RocketMQ 事务消息，内部完成落库与投递
@@ -165,11 +181,7 @@ public class MessageServiceImpl implements MessageService {
     /** 标记单聊消息为已投递 */
     @Override
     public void markDelivered(Long msgId) {
-        Message message = messageMapper.selectByMsgId(msgId);
-        if (message != null && message.getStatus() == MessageStatus.SENT.getCode()) {
-            message.setStatus(MessageStatus.DELIVERED.getCode());
-            message.setUpdatedAt(LocalDateTime.now());
-            messageMapper.updateById(message);
+        if (messageMapper.advanceStatus(msgId, MessageStatus.DELIVERED.getCode()) > 0) {
             cache.evict("msg:" + msgId);
         }
     }
@@ -177,12 +189,7 @@ public class MessageServiceImpl implements MessageService {
     /** 标记单聊消息为已读 */
     @Override
     public void markRead(Long msgId) {
-        Message message = messageMapper.selectByMsgId(msgId);
-        if (message != null && (message.getStatus() == MessageStatus.SENT.getCode()
-                || message.getStatus() == MessageStatus.DELIVERED.getCode())) {
-            message.setStatus(MessageStatus.READ.getCode());
-            message.setUpdatedAt(LocalDateTime.now());
-            messageMapper.updateById(message);
+        if (messageMapper.advanceStatus(msgId, MessageStatus.READ.getCode()) > 0) {
             cache.evict("msg:" + msgId);
         }
     }
@@ -190,6 +197,7 @@ public class MessageServiceImpl implements MessageService {
     /** 查询历史消息 — 分页拉取，自动过滤用户隐藏的消息，支持单聊和群聊 */
     @Override
     public List<MessageVO> queryHistory(Long userId, Long targetId, Integer receiverType, Long beforeMsgId, int limit) {
+        messageAccessService.assertCanAccessConversation(userId, targetId, receiverType);
         List<Message> messages = messageMapper.selectHistory(userId, targetId, receiverType, beforeMsgId, limit);
         Set<String> hiddenSet = getHiddenSet(userId);
         return messages.stream()
@@ -201,6 +209,7 @@ public class MessageServiceImpl implements MessageService {
     /** 隐藏消息 — 写入隐藏记录，清缓存，推送 hide 事件 */
     @Override
     public void hideMessage(Long userId, Long msgId) {
+        messageAccessService.assertCanAccessMessage(userId, messageMapper.selectByMsgId(msgId));
         UserMessageHide hide = new UserMessageHide();
         hide.setId(idGenerator.nextId());
         hide.setUserId(userId);
@@ -219,13 +228,11 @@ public class MessageServiceImpl implements MessageService {
                     "msgId", message.getMsgId()
             ));
             if (message.getReceiverType() == ReceiverType.GROUP.getCode()) {
-                Set<String> memberIds = groupService.getMemberIds(message.getReceiverId());
-                for (String memberIdStr : memberIds) {
-                    sessionManager.pushToUser(Long.valueOf(memberIdStr), json);
-                }
+                Set<Long> memberIds = groupService.getMemberIds(message.getReceiverId()).stream()
+                        .map(Long::valueOf).collect(Collectors.toSet());
+                pushRouter.pushToUsers(memberIds, json);
             } else {
-                sessionManager.pushToUser(message.getSenderId(), json);
-                sessionManager.pushToUser(message.getReceiverId(), json);
+                pushRouter.pushToUsers(Set.of(message.getSenderId(), message.getReceiverId()), json);
             }
         } catch (Exception e) {
             log.error("Failed to push recall event: msgId={}", message.getMsgId(), e);
@@ -239,7 +246,7 @@ public class MessageServiceImpl implements MessageService {
                     "type", "hide",
                     "msgId", msgId
             ));
-            sessionManager.pushToUser(userId, json);
+            pushRouter.pushToUser(userId, json);
         } catch (Exception e) {
             log.error("Failed to push hide event: userId={}, msgId={}", userId, msgId, e);
         }
@@ -262,6 +269,7 @@ public class MessageServiceImpl implements MessageService {
         MessageVO vo = new MessageVO();
         vo.setId(msg.getId());
         vo.setMsgId(msg.getMsgId());
+        vo.setClientMsgId(msg.getClientMsgId());
         vo.setSenderId(msg.getSenderId());
         vo.setSenderName(getSenderName(msg.getSenderId()));
         vo.setReceiverId(msg.getReceiverId());
@@ -295,11 +303,9 @@ public class MessageServiceImpl implements MessageService {
      * @return 已读状态 VO（已读人数、已读列表、未读列表）
      */
     @Override
-    public ReadStatusVO getReadStatus(Long msgId) {
+    public ReadStatusVO getReadStatus(Long userId, Long msgId) {
         Message message = messageMapper.selectByMsgId(msgId);
-        if (message == null) {
-            throw new BusinessException(ResultCode.NOT_FOUND, "消息不存在");
-        }
+        messageAccessService.assertCanAccessMessage(userId, message);
 
         ReadStatusVO vo = new ReadStatusVO();
         vo.setMsgId(msgId);
@@ -311,9 +317,9 @@ public class MessageServiceImpl implements MessageService {
             // 已读用户列表
             List<Long> readUserIds = bitmapAckService.getReadUsers(msgId, groupId);
             List<ReadStatusVO.ReadUser> readList = readUserIds.stream()
-                    .map(userId -> {
-                        String userName = userService.getById(userId).getNickname();
-                        return new ReadStatusVO.ReadUser(userId, userName, null);
+                    .map(readUserId -> {
+                        String userName = userService.getById(readUserId).getNickname();
+                        return new ReadStatusVO.ReadUser(readUserId, userName, null);
                     })
                     .collect(Collectors.toList());
             vo.setReadList(readList);
@@ -322,10 +328,10 @@ public class MessageServiceImpl implements MessageService {
             // 未读用户列表（排除发送者）
             List<Long> unreadUserIds = bitmapAckService.getUnreadUsers(msgId, groupId);
             List<ReadStatusVO.ReadUser> unreadList = unreadUserIds.stream()
-                    .filter(userId -> !userId.equals(message.getSenderId()))
-                    .map(userId -> {
-                        String userName = userService.getById(userId).getNickname();
-                        return new ReadStatusVO.ReadUser(userId, userName, null);
+                    .filter(unreadUserId -> !unreadUserId.equals(message.getSenderId()))
+                    .map(unreadUserId -> {
+                        String userName = userService.getById(unreadUserId).getNickname();
+                        return new ReadStatusVO.ReadUser(unreadUserId, userName, null);
                     })
                     .collect(Collectors.toList());
             vo.setUnreadList(unreadList);

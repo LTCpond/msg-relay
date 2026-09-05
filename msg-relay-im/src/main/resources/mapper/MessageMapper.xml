@@ -5,6 +5,7 @@
     <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.im.model.entity.Message">
         <id column="id" property="id"/>
         <result column="msg_id" property="msgId"/>
+        <result column="client_msg_id" property="clientMsgId"/>
         <result column="sender_id" property="senderId"/>
         <result column="receiver_id" property="receiverId"/>
         <result column="receiver_type" property="receiverType"/>
@@ -19,13 +20,13 @@
     </resultMap>
 
     <sql id="baseColumns">
-        id, msg_id, sender_id, receiver_id, receiver_type, msg_type,
+        id, msg_id, client_msg_id, sender_id, receiver_id, receiver_type, msg_type,
         content, extra_json, media_meta_json, status, created_at, updated_at, deleted
     </sql>
 
     <insert id="insert" parameterType="com.ltcpond.msgrelay.im.model.entity.Message">
-        INSERT INTO t_message (id, msg_id, sender_id, receiver_id, receiver_type, msg_type, content, extra_json, media_meta_json, status, created_at, updated_at)
-        VALUES (#{id}, #{msgId}, #{senderId}, #{receiverId}, #{receiverType}, #{msgType}, #{content}, #{extraJson}, #{mediaMetaJson}, #{status}, NOW(), NOW())
+        INSERT INTO t_message (id, msg_id, client_msg_id, sender_id, receiver_id, receiver_type, msg_type, content, extra_json, media_meta_json, status, created_at, updated_at)
+        VALUES (#{id}, #{msgId}, #{clientMsgId}, #{senderId}, #{receiverId}, #{receiverType}, #{msgType}, #{content}, #{extraJson}, #{mediaMetaJson}, #{status}, NOW(), NOW())
     </insert>
 
     <update id="updateById" parameterType="com.ltcpond.msgrelay.im.model.entity.Message">
@@ -40,6 +41,16 @@
     <select id="selectByMsgId" resultMap="BaseResultMap">
         SELECT <include refid="baseColumns"/> FROM t_message WHERE msg_id = #{msgId} AND deleted = 0
     </select>
+
+    <select id="selectBySenderAndClientMsgId" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_message
+        WHERE sender_id = #{senderId} AND client_msg_id = #{clientMsgId} AND deleted = 0
+    </select>
+
+    <update id="advanceStatus">
+        UPDATE t_message SET status = #{newStatus}, updated_at = NOW()
+        WHERE msg_id = #{msgId} AND status &lt; #{newStatus} AND status != 4 AND deleted = 0
+    </update>
 
     <select id="selectHistory" resultMap="BaseResultMap">
         SELECT <include refid="baseColumns"/> FROM t_message

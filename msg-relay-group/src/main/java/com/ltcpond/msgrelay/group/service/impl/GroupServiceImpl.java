@@ -79,6 +79,7 @@ public class GroupServiceImpl implements GroupService {
         groupMemberMapper.insert(member);
 
         redisTemplate.opsForSet().add("group:members:" + group.getId(), ownerId.toString());
+        groupMemberIndexService.assignMemberIndex(group.getId(), ownerId);
         return group;
     }
 
