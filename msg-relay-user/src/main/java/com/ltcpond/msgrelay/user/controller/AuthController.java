@@ -34,7 +34,7 @@ public class AuthController {
     @PostMapping("/logout")
     public Result<Void> logout(HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
-        String deviceId = request.getParameter("deviceId");
+        String deviceId = (String) request.getAttribute("deviceId");
         authService.logout(userId, deviceId);
         return Result.ok();
     }

@@ -6,7 +6,7 @@ import java.util.Map;
 /**
  * 在线状态服务接口（支持多设备）
  *
- * 设备标识从 channelId 改为 deviceId（AUTH 时客户端传入）
+ * 设备标识从 channelId 改为 deviceId（从已验证的 Access Token 提取）
  * 原因：channelId 每次重连都会变，deviceId 才是稳定的设备标识
  */
 public interface OnlineStatusService {

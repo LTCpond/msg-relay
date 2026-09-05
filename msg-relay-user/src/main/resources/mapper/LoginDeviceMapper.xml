@@ -8,7 +8,6 @@
         <result column="device_id" property="deviceId"/>
         <result column="device_type" property="deviceType"/>
         <result column="ip" property="ip"/>
-        <result column="refresh_token" property="refreshToken"/>
         <result column="last_active_at" property="lastActiveAt"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
@@ -16,17 +15,18 @@
     </resultMap>
 
     <sql id="baseColumns">
-        id, user_id, device_id, device_type, ip, refresh_token, last_active_at, created_at, updated_at, deleted
+        id, user_id, device_id, device_type, ip, last_active_at, created_at, updated_at, deleted
     </sql>
 
     <insert id="insert" parameterType="com.ltcpond.msgrelay.user.model.entity.LoginDevice">
-        INSERT INTO t_login_device (id, user_id, device_id, device_type, ip, refresh_token, last_active_at, created_at, updated_at)
-        VALUES (#{id}, #{userId}, #{deviceId}, #{deviceType}, #{ip}, #{refreshToken}, #{lastActiveAt}, NOW(), NOW())
+        INSERT INTO t_login_device (id, user_id, device_id, device_type, ip, last_active_at, created_at, updated_at)
+        VALUES (#{id}, #{userId}, #{deviceId}, #{deviceType}, #{ip}, #{lastActiveAt}, NOW(), NOW())
     </insert>
 
     <update id="updateById" parameterType="com.ltcpond.msgrelay.user.model.entity.LoginDevice">
-        UPDATE t_login_device SET refresh_token = #{refreshToken}, last_active_at = #{lastActiveAt}, updated_at = NOW()
-        WHERE id = #{id} AND deleted = 0
+        UPDATE t_login_device SET device_type = #{deviceType}, ip = #{ip},
+            last_active_at = #{lastActiveAt}, deleted = 0, updated_at = NOW()
+        WHERE id = #{id}
     </update>
 
     <select id="selectById" resultMap="BaseResultMap">
@@ -38,7 +38,7 @@
     </select>
 
     <select id="countByUserId" resultType="long">
-        SELECT COUNT(*) FROM t_login_device WHERE user_id = #{userId} AND deleted = 0
+        SELECT COUNT(DISTINCT device_id) FROM t_login_device WHERE user_id = #{userId} AND deleted = 0
     </select>
 
     <update id="deleteByIdLogic">
@@ -52,6 +52,11 @@
     <select id="selectByUserIdAndDeviceId" resultMap="BaseResultMap">
         SELECT <include refid="baseColumns"/> FROM t_login_device
         WHERE user_id = #{userId} AND device_id = #{deviceId} AND deleted = 0
+    </select>
+
+    <select id="selectByUserIdAndDeviceIdIncludingDeleted" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_login_device
+        WHERE user_id = #{userId} AND device_id = #{deviceId}
     </select>
 
     <select id="existsByUserIdAndDeviceId" resultType="boolean">

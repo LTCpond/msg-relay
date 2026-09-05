@@ -1,57 +1,51 @@
 package com.ltcpond.msgrelay.user.chain.handler;
 
-import com.ltcpond.msgrelay.common.constants.RedisChannel;
+import com.ltcpond.msgrelay.common.result.ResultCode;
 import com.ltcpond.msgrelay.user.chain.LoginContext;
 import com.ltcpond.msgrelay.user.chain.LoginHandler;
 import com.ltcpond.msgrelay.user.model.entity.LoginDevice;
+import com.ltcpond.msgrelay.user.model.entity.User;
 import com.ltcpond.msgrelay.user.repository.LoginDeviceMapper;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.RedisTemplate;
+import com.ltcpond.msgrelay.user.repository.UserMapper;
+import com.ltcpond.msgrelay.user.service.LoginSessionService;
+import jakarta.annotation.Resource;
 import org.springframework.stereotype.Component;
 
-import jakarta.annotation.Resource;
 import java.util.List;
 
-/**
- * 多设备管理 — 责任链第三节点
- *
- * 限制单用户最多 5 个设备同时在线
- * 超出时踢出最早登录的设备（按 last_active_at 排序）
- * 被踢设备的 refreshToken 标记为逻辑删除，并通过 Redis Pub/Sub 通知所有节点断开连接
- */
-@Slf4j
+/** 最多五个有效设备登录会话，重复登录同一设备不增加名额。 */
 @Component
 public class MultiDeviceHandler extends LoginHandler {
-
     @Resource
     private LoginDeviceMapper loginDeviceMapper;
-
-    @Autowired(required = false)
-    private RedisTemplate<String, Object> kickRedisTemplate;
+    @Resource
+    private UserMapper userMapper;
+    @Resource
+    private LoginSessionService loginSessionService;
 
     @Override
     public boolean handle(LoginContext context) {
-        Long count = loginDeviceMapper.countByUserId(context.getUser().getId());
+        Long userId = context.getUser().getId();
+        // login 的事务持有用户行锁，覆盖名额检查和后续会话写入，避免并发超额。
+        User user = userMapper.selectByIdForUpdate(userId);
+        if (user == null) {
+            context.setResultCode(ResultCode.TOKEN_INVALID);
+            return false;
+        }
+        if (Integer.valueOf(User.STATUS_BANNED).equals(user.getStatus())) {
+            context.setResultCode(ResultCode.USER_BANNED);
+            return false;
+        }
+        context.setUser(user);
+        if (loginDeviceMapper.existsByUserIdAndDeviceId(userId, context.getDeviceId())) {
+            return next(context);
+        }
+        long count = loginDeviceMapper.countByUserId(userId);
         if (count >= 5) {
-            // 找出最久未活跃的设备并踢下线
-            List<LoginDevice> devices = loginDeviceMapper.selectByUserId(context.getUser().getId());
-            if (!devices.isEmpty()) {
-                LoginDevice oldest = devices.get(devices.size() - 1);
-
-                // 1. 删除数据库记录
-                loginDeviceMapper.deleteByIdLogic(oldest.getId());
-
-                // 2. 发布 Redis 踢人消息（通知所有 Netty 节点）
-                if (kickRedisTemplate != null) {
-                    String kickMessage = context.getUser().getId() + ":" + oldest.getDeviceId();
-                    kickRedisTemplate.convertAndSend(RedisChannel.KICK_CHANNEL, kickMessage);
-                    log.info("Published kick message: userId={}, deviceId={}",
-                            context.getUser().getId(), oldest.getDeviceId());
-                }
-
-                log.info("Kicked oldest device: userId={}, deviceId={}",
-                        context.getUser().getId(), oldest.getDeviceId());
+            List<LoginDevice> devices = loginDeviceMapper.selectByUserId(userId);
+            // 列表按最后活跃时间降序排列；也兼容历史数据已经超过五台的情况。
+            for (int i = devices.size() - 1; i >= 0 && count >= 5; i--, count--) {
+                loginSessionService.revoke(userId, devices.get(i).getDeviceId());
             }
         }
         return next(context);

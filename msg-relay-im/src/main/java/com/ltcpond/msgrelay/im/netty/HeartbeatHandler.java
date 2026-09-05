@@ -1,10 +1,8 @@
 package com.ltcpond.msgrelay.im.netty;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import com.ltcpond.msgrelay.im.config.HeartbeatConfig;
 import com.ltcpond.msgrelay.im.service.OnlineStatusService;
-import com.ltcpond.msgrelay.user.repository.LoginDeviceMapper;
+import com.ltcpond.msgrelay.common.auth.LoginSessionValidator;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -17,7 +15,6 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -53,13 +50,7 @@ public class HeartbeatHandler extends ChannelInboundHandlerAdapter {
     private SessionManager sessionManager;
 
     @Resource
-    private LoginDeviceMapper loginDeviceMapper;
-
-    /** 设备踢出状态缓存 — 5s TTL 避免每次心跳都查 DB */
-    private final Cache<String, Boolean> deviceKickCache = Caffeine.newBuilder()
-            .expireAfterWrite(Duration.ofSeconds(5))
-            .maximumSize(50000)
-            .build();
+    private LoginSessionValidator loginSessionValidator;
 
     /** 认证状态：由 WebSocketHandler 认证成功后通过事件触发 */
     private static final AttributeKey<Boolean> AUTHENTICATED =
@@ -179,14 +170,11 @@ public class HeartbeatHandler extends ChannelInboundHandlerAdapter {
         ctx.channel().attr(MISS_COUNT).set(0);
         cancelPongTimeout(ctx);
 
-        // 校验设备是否已被踢出（DB 查询 + Caffeine 缓存降级）
+        // 与 HTTP、刷新、AUTH 共用 Redis 会话缓存，不保留本地正缓存。
         Long userId = sessionManager.getUserId(ctx.channel());
         String deviceId = ctx.channel().attr(SessionAttributes.DEVICE_ID).get();
         if (userId != null && deviceId != null) {
-            String cacheKey = userId + ":" + deviceId;
-            Boolean stillValid = deviceKickCache.get(cacheKey,
-                    k -> loginDeviceMapper.existsByUserIdAndDeviceId(userId, deviceId));
-            if (Boolean.FALSE.equals(stillValid)) {
+            if (!loginSessionValidator.isValid(userId, deviceId)) {
                 log.info("心跳时发现设备已被踢出: userId={}, deviceId={}", userId, deviceId);
                 ctx.channel().writeAndFlush(
                         new io.netty.handler.codec.http.websocketx.TextWebSocketFrame("KICKED"));

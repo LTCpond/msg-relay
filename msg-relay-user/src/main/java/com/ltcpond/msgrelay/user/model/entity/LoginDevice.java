@@ -24,7 +24,4 @@ public class LoginDevice extends BaseEntity {
 
     /** 最后活跃时间 */
     private LocalDateTime lastActiveAt;
-
-    /** 刷新Token */
-    private String refreshToken;
 }

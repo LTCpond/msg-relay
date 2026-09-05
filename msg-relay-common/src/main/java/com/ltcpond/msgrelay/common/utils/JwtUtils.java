@@ -2,33 +2,24 @@ package com.ltcpond.msgrelay.common.utils;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
-/**
- * JWT 工具类 — 无状态认证的核心
- *
- * 双 Token 机制:
- * - accessToken: 短期有效（默认 2h），用于 API 鉴权
- * - refreshToken: 长期有效（默认 7d），用于无感续期
- *
- * 流程: 登录 → 返回双 token → API 请求带 accessToken → 过期后用 refreshToken 换新
- */
-@Slf4j
+/** 双 JWT 身份凭证；是否允许使用由设备登录会话决定。Token 本身不落库。 */
 @Component
 public class JwtUtils {
+    public static final String ACCESS = "ACCESS";
+    public static final String REFRESH = "REFRESH";
 
     @Value("${jwt.secret}")
     private String secret;
-
     @Value("${jwt.access-token-expire}")
     private long accessTokenExpire;
-
     @Value("${jwt.refresh-token-expire}")
     private long refreshTokenExpire;
 
@@ -36,48 +27,86 @@ public class JwtUtils {
         return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
 
-    public String generateAccessToken(Long userId) {
-        return generateToken(userId, null, accessTokenExpire);
+    public long getAccessTokenExpire() {
+        return accessTokenExpire;
     }
 
-    /** 生成 refresh token，将 deviceId 编码到 claims 中以支持踢人后失效 */
+    public String generateAccessToken(Long userId, String deviceId) {
+        return generateToken(userId, deviceId, ACCESS, accessTokenExpire);
+    }
+
     public String generateRefreshToken(Long userId, String deviceId) {
-        return generateToken(userId, deviceId, refreshTokenExpire);
+        return generateToken(userId, deviceId, REFRESH, refreshTokenExpire);
     }
 
-    private String generateToken(Long userId, String deviceId, long expireSeconds) {
-        Date now = new Date();
-        var builder = Jwts.builder()
-                .subject(String.valueOf(userId))
-                .issuedAt(now)
-                .expiration(new Date(now.getTime() + expireSeconds * 1000));
-        if (deviceId != null) {
-            builder.claim("deviceId", deviceId);
+    private String generateToken(Long userId, String deviceId, String tokenType, long expireSeconds) {
+        if (userId == null || !StringUtils.hasText(deviceId)) {
+            throw new IllegalArgumentException("userId 和 deviceId 不能为空");
         }
-        return builder.signWith(getKey()).compact();
+        Date now = new Date();
+        return Jwts.builder()
+                .subject(String.valueOf(userId))
+                .claim("deviceId", deviceId)
+                .claim("tokenType", tokenType)
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + expireSeconds * 1000))
+                .signWith(getKey())
+                .compact();
     }
 
-    /** 从 token 中提取 deviceId，仅 refresh token 携带此 claim */
-    public String getDeviceId(String token) {
-        return parseToken(token).get("deviceId", String.class);
+    public Claims parseAccessToken(String token) {
+        return parseTypedToken(token, ACCESS);
+    }
+
+    public Claims parseRefreshToken(String token) {
+        return parseTypedToken(token, REFRESH);
+    }
+
+    private Claims parseTypedToken(String token, String expectedType) {
+        Claims claims = parseToken(token);
+        if (!expectedType.equals(claims.get("tokenType", String.class))
+                || !StringUtils.hasText(claims.get("deviceId", String.class))
+                || claims.getExpiration() == null) {
+            throw new JwtException("Token 类型或必要声明无效");
+        }
+        try {
+            Long.parseLong(claims.getSubject());
+        } catch (NumberFormatException e) {
+            throw new JwtException("Token 用户身份无效", e);
+        }
+        return claims;
+    }
+
+    public boolean validateAccessToken(String token) {
+        return validateToken(token, ACCESS);
+    }
+
+    public boolean validateRefreshToken(String token) {
+        return validateToken(token, REFRESH);
+    }
+
+    private boolean validateToken(String token, String type) {
+        try {
+            parseTypedToken(token, type);
+            return true;
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
     }
 
     public Claims parseToken(String token) {
-        try {
-            return Jwts.parser()
-                    .verifyWith(getKey())
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
-        } catch (ExpiredJwtException e) {
-            throw new RuntimeException("Token已过期", e);
-        } catch (JwtException e) {
-            throw new RuntimeException("Token无效", e);
-        }
+        return Jwts.parser().verifyWith(getKey()).build().parseSignedClaims(token).getPayload();
     }
 
     public Long getUserId(String token) {
         return Long.valueOf(parseToken(token).getSubject());
     }
 
+    public String getDeviceId(String token) {
+        return parseToken(token).get("deviceId", String.class);
+    }
+
+    public String getTokenType(String token) {
+        return parseToken(token).get("tokenType", String.class);
+    }
 }

@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
  *
  * 生命周期（与 HeartbeatHandler 协作）：
  * 1. 握手完成 → HeartbeatHandler 标记未认证，等待 AUTH
- * 2. 客户端发 "AUTH {jwtToken} {deviceId}" → 本 handler 处理 session 注册
+ * 2. 客户端发 "AUTH {jwtToken}" → 本 handler 处理 session 注册
  * 3. 认证成功 → HeartbeatHandler 发首跳 Ping，进入心跳状态机
  * 4. 后续心跳由 HeartbeatHandler 通过控制帧（Ping/Pong）管理
  * 5. 连接断开 → 本 handler 清理 session + 标记离线
@@ -45,14 +45,12 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
         String channelId = ctx.channel().id().asLongText();
 
         if (text.startsWith("AUTH ")) {
-            // 认证流程：解析 JWT + deviceId → 注册 session → 标记在线
-            // 协议: AUTH {jwtToken} {deviceId}
-            String[] parts = text.substring(5).split(" ");
-            String token = parts[0];
-            String deviceId = parts.length > 1 ? parts[1] : channelId;
-            Long userId = sessionManager.authenticate(ctx.channel(), token, deviceId);
+            // 协议只接受 AUTH {accessToken}；设备身份完全来自签名后的 JWT。
+            String token = text.substring(5).trim();
+            Long userId = sessionManager.authenticate(ctx.channel(), token);
 
             if (userId != null) {
+                String deviceId = ctx.channel().attr(SessionAttributes.DEVICE_ID).get();
                 ctx.channel().writeAndFlush(new TextWebSocketFrame("AUTH_OK"));
                 // 标记 presence 在线（用 deviceId 作为设备标识，不再用 channelId）
                 onlineStatusService.online(userId, deviceId, channelId);
@@ -79,7 +77,8 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
         String deviceId = ctx.channel().attr(SessionAttributes.DEVICE_ID).get();
         Long userId = sessionManager.remove(ctx.channel());
 
-        if (userId != null && deviceId != null) {
+        if (userId != null && deviceId != null
+                && sessionManager.getChannelByDeviceId(userId, deviceId) == null) {
             onlineStatusService.offline(userId, deviceId);
             log.info("设备断开: userId={}, deviceId={}, channel={}", userId, deviceId, channelId);
         }

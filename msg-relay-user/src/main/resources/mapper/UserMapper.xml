@@ -48,6 +48,10 @@
         SELECT <include refid="baseColumns"/> FROM t_user WHERE id = #{id} AND deleted = 0
     </select>
 
+    <select id="selectByIdForUpdate" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/> FROM t_user WHERE id = #{id} AND deleted = 0 FOR UPDATE
+    </select>
+
     <select id="selectByUsername" resultMap="BaseResultMap">
         SELECT <include refid="baseColumns"/> FROM t_user WHERE username = #{username} AND deleted = 0 LIMIT 1
     </select>

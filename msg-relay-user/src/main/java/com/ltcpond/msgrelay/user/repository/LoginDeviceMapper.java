@@ -25,5 +25,7 @@ public interface LoginDeviceMapper {
 
     LoginDevice selectByUserIdAndDeviceId(@Param("userId") Long userId, @Param("deviceId") String deviceId);
 
+    LoginDevice selectByUserIdAndDeviceIdIncludingDeleted(@Param("userId") Long userId, @Param("deviceId") String deviceId);
+
     boolean existsByUserIdAndDeviceId(@Param("userId") Long userId, @Param("deviceId") String deviceId);
 }

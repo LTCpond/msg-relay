@@ -16,6 +16,9 @@ public interface UserMapper {
 
     User selectById(@Param("id") Long id);
 
+    /** 登录事务锁定用户行，串行执行该用户的设备名额检查和会话创建。 */
+    User selectByIdForUpdate(@Param("id") Long id);
+
     /** 根据 username 全局查询 */
     User selectByUsername(@Param("username") String username);
 

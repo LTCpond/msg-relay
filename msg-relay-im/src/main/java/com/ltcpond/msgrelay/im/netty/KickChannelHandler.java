@@ -4,6 +4,7 @@ import com.ltcpond.msgrelay.im.service.OnlineStatusService;
 import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import jakarta.annotation.Resource;
+import java.nio.charset.StandardCharsets;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
@@ -14,7 +15,7 @@ import org.springframework.stereotype.Component;
  *
  * 消息格式: "userId:deviceId"
  * 收到消息后:
- * 1. 根据 deviceId 找到对应的 WebSocket Channel
+ * 1. 根据 userId + deviceId 找到对应的 WebSocket Channel
  * 2. 发送 "KICKED" 指令通知客户端
  * 3. 清理 Redis ZSET 在线状态
  * 4. 关闭连接
@@ -34,8 +35,8 @@ public class KickChannelHandler implements MessageListener {
     @Override
     public void onMessage(Message message, byte[] pattern) {
         try {
-            String body = new String(message.getBody());
-            String[] parts = body.split(":");
+            String body = new String(message.getBody(), StandardCharsets.UTF_8);
+            String[] parts = body.split(":", 2);
             if (parts.length != 2) {
                 log.warn("Invalid kick message format: {}", body);
                 return;
@@ -47,8 +48,8 @@ public class KickChannelHandler implements MessageListener {
             // 主动清理 Redis ZSET，消除 40s 残留窗口
             onlineStatusService.offline(userId, deviceId);
 
-            // 根据 deviceId 找到对应的 Channel
-            Channel channel = sessionManager.getChannelByDeviceId(deviceId);
+            // 根据 userId + deviceId 找到对应的 Channel
+            Channel channel = sessionManager.getChannelByDeviceId(userId, deviceId);
             if (channel != null && channel.isActive()) {
                 // 发送 KICKED 指令
                 channel.writeAndFlush(new TextWebSocketFrame("KICKED"));

@@ -49,6 +49,9 @@ canal:
   destination: example
 
 msg-relay:
+  login-session:
+    cache-ttl-seconds: 300             # 有效会话缓存 5 分钟
+    negative-cache-ttl-seconds: 30     # 无效会话短缓存，避免反复回源
   netty:
     ws-port: 8090
     node-id: ${NODE_ID:node-1}

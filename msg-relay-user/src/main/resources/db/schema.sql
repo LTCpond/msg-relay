@@ -59,13 +59,13 @@ CREATE TABLE IF NOT EXISTS t_team_admin (
 CREATE TABLE IF NOT EXISTS t_login_device (
     id BIGINT NOT NULL PRIMARY KEY COMMENT 'ID',
     user_id BIGINT NOT NULL COMMENT '用户ID',
-    device_id VARCHAR(128) COMMENT '设备ID',
+    device_id VARCHAR(128) NOT NULL COMMENT '设备ID',
     device_type VARCHAR(32) COMMENT '设备类型: PC/ANDROID/IOS/WEB',
     ip VARCHAR(64) COMMENT '登录IP',
-    refresh_token VARCHAR(512) COMMENT '刷新Token',
     last_active_at DATETIME COMMENT '最后活跃时间',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted TINYINT DEFAULT 0 COMMENT '逻辑删除',
-    INDEX idx_user (user_id)
+    INDEX idx_user (user_id),
+    UNIQUE KEY uk_user_device (user_id, device_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录设备表';

@@ -1,5 +1,10 @@
 package com.ltcpond.msgrelay.user.service.impl;
 import com.ltcpond.msgrelay.user.service.AuthService;
+import com.ltcpond.msgrelay.user.service.LoginSessionService;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 
 import com.ltcpond.msgrelay.user.model.dto.LoginRequest;
 import com.ltcpond.msgrelay.user.model.dto.LoginResponse;
@@ -17,7 +22,6 @@ import com.ltcpond.msgrelay.common.result.ResultCode;
 import com.ltcpond.msgrelay.common.utils.JwtUtils;
 import com.ltcpond.msgrelay.common.utils.SnowflakeIdGenerator;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.Resource;
@@ -29,11 +33,11 @@ import java.time.LocalDateTime;
  * 登录流程:
  * 1. 构建 LoginContext，传入责任链
  * 2. PasswordCheck → BanCheck → MultiDevice 依次校验
- * 3. 通过后生成双 token，记录设备到 t_login_device
+ * 3. 先创建/恢复设备登录会话，再签发双 token
  *
  * 双 Token 设计:
  * - accessToken (2h): 随 API 请求携带，短期有效减少泄露风险
- * - refreshToken (7d): 存储在设备记录中，用于无感续期
+ * - refreshToken (7d): 无状态 JWT，只负责续期；设备会话决定是否允许续期
  */
 @Slf4j
 @Service
@@ -51,7 +55,8 @@ public class AuthServiceImpl implements AuthService {
     @Resource
     private SnowflakeIdGenerator idGenerator;
 
-    private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    @Resource
+    private LoginSessionService loginSessionService;
 
     @Resource
     private PasswordCheckHandler passwordCheckHandler;
@@ -63,6 +68,7 @@ public class AuthServiceImpl implements AuthService {
     private MultiDeviceHandler multiDeviceHandler;
 
     @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public LoginResponse login(LoginRequest request, String ip) {
         LoginContext context = new LoginContext();
         context.setUsername(request.getUsername());
@@ -91,59 +97,64 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginResponse refreshToken(String refreshToken) {
+        Claims claims;
         try {
-            Long userId = jwtUtils.getUserId(refreshToken);
-            User user = userMapper.selectById(userId);
-            if (user == null) {
-                throw new BusinessException(ResultCode.TOKEN_INVALID);
-            }
-            // 封禁用户不允许刷新 token
-            if (user.getStatus() != null && user.getStatus() == User.STATUS_BANNED) {
-                throw new BusinessException(ResultCode.USER_BANNED);
-            }
-            // 校验设备记录仍有效（未被踢出）
-            String deviceId = jwtUtils.getDeviceId(refreshToken);
-            if (deviceId != null) {
-                LoginDevice device = loginDeviceMapper.selectByUserIdAndDeviceId(userId, deviceId);
-                if (device == null) {
-                    throw new BusinessException(ResultCode.TOKEN_INVALID, "设备已被踢出");
-                }
-            }
-            String newAccessToken = jwtUtils.generateAccessToken(userId);
-            String newRefreshToken = jwtUtils.generateRefreshToken(userId, deviceId);
-            return new LoginResponse(newAccessToken, newRefreshToken, 7200, userId, user.getNickname());
-        } catch (BusinessException e) {
-            throw e;
-        } catch (Exception e) {
+            claims = jwtUtils.parseRefreshToken(refreshToken);
+        } catch (JwtException | IllegalArgumentException e) {
             throw new BusinessException(ResultCode.TOKEN_INVALID);
         }
+        Long userId = Long.valueOf(claims.getSubject());
+        String deviceId = claims.get("deviceId", String.class);
+        if (!loginSessionService.isValid(userId, deviceId)) {
+            throw new BusinessException(ResultCode.TOKEN_INVALID, "登录状态已失效");
+        }
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ResultCode.TOKEN_INVALID);
+        }
+        if (user.getStatus() != null && user.getStatus() == User.STATUS_BANNED) {
+            throw new BusinessException(ResultCode.USER_BANNED);
+        }
+        return issueTokens(user, deviceId);
     }
 
     @Override
     public void logout(Long userId, String deviceId) {
-        // 逻辑删除设备记录，该设备的 refreshToken 立即失效
-        loginDeviceMapper.deleteByUserIdAndDeviceId(userId, deviceId);
+        loginSessionService.revoke(userId, deviceId);
     }
 
-    /** 生成双 token + 记录登录设备 */
+    /** 先创建/恢复设备登录会话，再签发凭证。 */
     private LoginResponse buildLoginResponse(User user, String deviceId, String deviceType, String ip) {
-        String accessToken = jwtUtils.generateAccessToken(user.getId());
-        String refreshToken = jwtUtils.generateRefreshToken(user.getId(), deviceId);
+        saveOrRefreshLoginDevice(user.getId(), deviceId, deviceType, ip);
+        loginSessionService.sessionChanged(user.getId(), deviceId);
+        return issueTokens(user, deviceId);
+    }
 
-        LoginDevice device = new LoginDevice();
-        device.setId(idGenerator.nextId());
-        device.setUserId(user.getId());
-        device.setDeviceId(deviceId);
+    private LoginResponse issueTokens(User user, String deviceId) {
+        return new LoginResponse(jwtUtils.generateAccessToken(user.getId(), deviceId),
+                jwtUtils.generateRefreshToken(user.getId(), deviceId),
+                jwtUtils.getAccessTokenExpire(), user.getId(), user.getNickname());
+    }
+
+    private void saveOrRefreshLoginDevice(Long userId, String deviceId, String deviceType, String ip) {
+        LoginDevice device = loginDeviceMapper.selectByUserIdAndDeviceIdIncludingDeleted(userId, deviceId);
+        boolean isNew = device == null;
+        if (isNew) {
+            device = new LoginDevice();
+            device.setId(idGenerator.nextId());
+            device.setUserId(userId);
+            device.setDeviceId(deviceId);
+            device.setCreatedAt(LocalDateTime.now());
+        }
         device.setDeviceType(deviceType);
         device.setIp(ip);
-        device.setRefreshToken(refreshToken);
         device.setLastActiveAt(LocalDateTime.now());
         device.setDeleted(0);
-        device.setCreatedAt(LocalDateTime.now());
         device.setUpdatedAt(LocalDateTime.now());
-        loginDeviceMapper.insert(device);
-
-        return new LoginResponse(accessToken, refreshToken, 7200, user.getId(), user.getNickname());
+        if (isNew) {
+            loginDeviceMapper.insert(device);
+        } else {
+            loginDeviceMapper.updateById(device);
+        }
     }
-
 }

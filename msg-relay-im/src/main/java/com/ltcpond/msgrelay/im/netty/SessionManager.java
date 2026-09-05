@@ -1,6 +1,8 @@
 package com.ltcpond.msgrelay.im.netty;
 
 import com.ltcpond.msgrelay.common.utils.JwtUtils;
+import com.ltcpond.msgrelay.common.auth.LoginSessionValidator;
+import io.jsonwebtoken.Claims;
 import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import jakarta.annotation.Resource;
@@ -16,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * channelUserMap: channelId → userId（根据 channel 找用户）
  * userChannelMap: userId → Set<channelId>（根据用户找所有 channel，用于消息推送）
- * deviceChannelMap: deviceId → channelId（根据设备找 channel，用于踢人）
+ * deviceChannelMap: userId + deviceId → channelId（根据设备找 channel，用于踢人）
  *
  * 一个用户可以同时有多个设备连接（手机、电脑、平板）
  */
@@ -27,6 +29,9 @@ public class SessionManager {
     @Resource
     private JwtUtils jwtUtils;
 
+    @Resource
+    private LoginSessionValidator loginSessionValidator;
+
     private final ConcurrentHashMap<String, Long> channelUserMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Set<String>> userChannelMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Channel> channelMap = new ConcurrentHashMap<>();
@@ -34,16 +39,30 @@ public class SessionManager {
     private final ConcurrentHashMap<String, String> channelDeviceMap = new ConcurrentHashMap<>();
 
     /** 认证: 解析 JWT → 建立双向映射 */
-    public Long authenticate(Channel channel, String token, String deviceId) {
+    public Long authenticate(Channel channel, String token) {
         try {
-            Long userId = jwtUtils.getUserId(token);
+            if (getUserId(channel) != null) {
+                return null;
+            }
+            Claims claims = jwtUtils.parseAccessToken(token);
+            Long userId = Long.valueOf(claims.getSubject());
+            String deviceId = claims.get("deviceId", String.class);
+            if (!loginSessionValidator.isValid(userId, deviceId)) {
+                return null;
+            }
             String channelId = channel.id().asLongText();
             channelUserMap.put(channelId, userId);
             userChannelMap.computeIfAbsent(userId, k -> ConcurrentHashMap.newKeySet()).add(channelId);
             channelMap.put(channelId, channel);
             channel.attr(SessionAttributes.USER_ID).set(userId);
             channel.attr(SessionAttributes.DEVICE_ID).set(deviceId);
-            deviceChannelMap.put(deviceId, channelId);
+            String previousChannelId = deviceChannelMap.put(deviceKey(userId, deviceId), channelId);
+            if (previousChannelId != null && !previousChannelId.equals(channelId)) {
+                Channel previous = channelMap.get(previousChannelId);
+                if (previous != null) {
+                    previous.close();
+                }
+            }
             channelDeviceMap.put(channelId, deviceId);
             return userId;
         } catch (Exception e) {
@@ -80,7 +99,7 @@ public class SessionManager {
         // 清理设备映射
         String deviceId = channelDeviceMap.remove(channelId);
         if (deviceId != null) {
-            deviceChannelMap.remove(deviceId);
+            deviceChannelMap.remove(deviceKey(userId, deviceId), channelId);
         }
         channel.attr(SessionAttributes.USER_ID).set(null);
         channel.attr(SessionAttributes.DEVICE_ID).set(null);
@@ -92,10 +111,14 @@ public class SessionManager {
         return channelMap.get(channelId);
     }
 
-    /** 根据 deviceId 获取 Channel，用于踢人 */
-    public Channel getChannelByDeviceId(String deviceId) {
-        String channelId = deviceChannelMap.get(deviceId);
+    /** 根据用户和设备定位连接，避免跨用户设备标识冲突。 */
+    public Channel getChannelByDeviceId(Long userId, String deviceId) {
+        String channelId = deviceChannelMap.get(deviceKey(userId, deviceId));
         return channelId != null ? getChannel(channelId) : null;
+    }
+
+    private String deviceKey(Long userId, String deviceId) {
+        return userId + ":" + deviceId;
     }
 
     /** 根据 channelId 获取 deviceId */
