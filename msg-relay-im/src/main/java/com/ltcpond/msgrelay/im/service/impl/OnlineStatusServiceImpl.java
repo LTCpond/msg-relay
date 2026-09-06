@@ -301,7 +301,6 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     /**
      * 获取用户所有在线设备 ID 列表
-     * 供跨节点推送路由使用（当前单实例暂未用到，预留接口）
      */
     public List<String> getOnlineDevices(Long userId) {
         String key = USER_SET_PREFIX + userId;
