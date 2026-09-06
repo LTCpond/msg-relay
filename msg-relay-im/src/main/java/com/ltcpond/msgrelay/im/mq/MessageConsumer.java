@@ -10,6 +10,7 @@ import com.ltcpond.msgrelay.group.service.GroupService;
 import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
 import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
 import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
+import com.ltcpond.msgrelay.common.lock.LockTemplate;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -53,48 +54,42 @@ public class MessageConsumer implements RocketMQListener<String> {
     @Resource
     private RedisTemplate<String, Object> redisTemplate;
 
-    /** 消费消息 — SETNX 幂等 → 业务处理 → 失败删 key 允许重试 */
+    @Resource
+    private LockTemplate lockTemplate;
+
+    /** 消费消息 — done 快速判断 → 安全 processing 锁 → 锁内二次判断 → 业务处理 */
     @Override
     public void onMessage(String msg) {
         Message message = null;
-        String idempotentKey = null;
         try {
             message = objectMapper.readValue(msg, Message.class);
-
             String doneKey = "mq:consume:done:" + message.getMsgId();
             if (Boolean.TRUE.equals(redisTemplate.hasKey(doneKey))) {
                 log.info("Message already consumed (idempotent skip): msgId={}", message.getMsgId());
                 return;
             }
-            // processing 锁只覆盖本次处理；done 标记只在全部业务完成后写入。
-            idempotentKey = "mq:consume:processing:" + message.getMsgId();
-            Boolean acquired = redisTemplate.opsForValue()
-                    .setIfAbsent(idempotentKey, "1", 60, TimeUnit.SECONDS);
-            if (Boolean.FALSE.equals(acquired)) {
-                throw new IllegalStateException("消息正在由其他消费者处理");
-            }
+            Message processingMessage = message;
+            lockTemplate.executeWithLock(
+                    "mq:consume:processing:" + processingMessage.getMsgId(), 1, 60, () -> {
+                        // 关闭第一次 hasKey 与成功获取锁之间的竞态窗口。
+                        if (Boolean.TRUE.equals(redisTemplate.hasKey(doneKey))) {
+                            return null;
+                        }
 
-            updateConversations(message);
-
-            // 2. 更新消息状态为 SENT
-            messageMapper.advanceStatus(message.getMsgId(), MessageStatus.SENT.getCode());
-            message.setStatus(MessageStatus.SENT.getCode());
-            cache.evict("msg:" + message.getMsgId());
-
-            // 3. 推送给在线用户
-            observerManager.notifyObservers(message);
-            redisTemplate.opsForValue().set(doneKey, "1", 7, TimeUnit.DAYS);
-            redisTemplate.delete(idempotentKey);
-            log.info("Message persisted and pushed: msgId={}", message.getMsgId());
+                        updateConversations(processingMessage);
+                        messageMapper.advanceStatus(processingMessage.getMsgId(), MessageStatus.SENT.getCode());
+                        processingMessage.setStatus(MessageStatus.SENT.getCode());
+                        cache.evict("msg:" + processingMessage.getMsgId());
+                        observerManager.notifyObservers(processingMessage);
+                        redisTemplate.opsForValue().set(doneKey, "1", 7, TimeUnit.DAYS);
+                        log.info("Message persisted and pushed: msgId={}", processingMessage.getMsgId());
+                        return null;
+                    });
         } catch (JsonProcessingException e) {
             log.error("Failed to deserialize message from RocketMQ", e);
         } catch (Exception e) {
-            // 业务失败：删除幂等 key，让 RocketMQ 重试
             log.error("Consumer processing failed, will retry: msgId={}",
                     message != null ? message.getMsgId() : "unknown", e);
-            if (idempotentKey != null) {
-                redisTemplate.delete(idempotentKey);
-            }
             throw e; // 抛出触发 RocketMQ 重试
         }
     }
