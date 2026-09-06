@@ -197,7 +197,7 @@ docker compose down -v
 - `t_login_device` 每对用户/设备保留一行，退出后逻辑删除，再登录恢复该行。同一用户的登录事务通过用户行锁串行检查最多五台设备，新设备超额时撤销最久未活跃的会话。
 - `POST /api/user/auth/logout` 只需要 Bearer Access Token，不再读取客户端传入的 deviceId。远端踢人仍使用 `DELETE /api/user/device/{deviceId}`。
 - WebSocket 认证格式为 `AUTH <access-token>`，设备标识从 Token 提取。退出、踢人、超额淘汰统一在数据库提交后发布 KICK，节点关闭连接并清理 Presence；漏收通知时由心跳检查兜底。
-- Redis `online:u:*` / `online:dev:*` 只表示 WebSocket 在线状态。登录会话独立使用 `login:session:{userId}:{deviceId}`，值 `1` / `0` 表示有效/无效，默认分别缓存 300 秒 / 30 秒，通过 `msg-relay.login-session.cache-ttl-seconds` 和 `negative-cache-ttl-seconds` 配置。缓存命中无需查询 MySQL；刷新仍会查询用户信息以检查封禁。
+- Redis `online:u:*` / `online:route:*` 只表示 WebSocket 在线状态，用于判断在线和多实例路由。登录会话独立使用 `login:session:{userId}:{deviceId}`，值 `1` / `0` 表示有效/无效，默认分别缓存 300 秒 / 30 秒，通过 `msg-relay.login-session.cache-ttl-seconds` 和 `negative-cache-ttl-seconds` 配置。缓存命中无需查询 MySQL；刷新仍会查询用户信息以检查封禁。
 - 缓存未命中时先设置短期 LOADING 标记，再查 MySQL；Lua 仅允许持有原标记的请求回填，防止踢人前启动的旧查询覆盖撤销状态。并发加载或会话变更期间临时回源、不回填。
 - 登录、退出和踢人在数据库提交前将缓存标记为 UPDATING，提交/回滚结束后按标记删除，下次请求按数据库当前状态重建缓存。提交前 Redis 更新失败会回滚设备变更，不返回假成功；Redis 读取故障时鉴权回源 MySQL。
 - UPDATING 标记不设过期时间，提交结果未知或进程崩溃留下标记时，该设备持续回源 MySQL。确认写事务已经结束后，可删除对应 `login:session:*` 单个 key 恢复缓存；不要直接写入有效状态。

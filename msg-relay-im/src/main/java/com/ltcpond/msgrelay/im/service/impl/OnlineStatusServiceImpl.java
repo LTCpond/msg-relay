@@ -43,8 +43,8 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
     /** ZSET key 前缀：online:u:{userId} */
     private static final String USER_SET_PREFIX = "online:u:";
 
-    /** 设备元信息 key 前缀：online:dev:{userId}:{deviceId} */
-    private static final String DEV_INFO_PREFIX = "online:dev:";
+    /** 设备路由 key 前缀：online:route:{userId}:{deviceId}，String value=nodeId */
+    private static final String DEVICE_ROUTE_PREFIX = "online:route:";
 
     /**
      * Lua: touch（注册/续租）
@@ -53,18 +53,18 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
      * 1. Redis TIME 取当前时间（统一时钟，避免节点偏差）
      * 2. 清理 ZSET 中已过期的设备
      * 3. 将当前设备加入 ZSET，score=now+ttl
-     * 4. 写入设备元信息（nodeId、channelId）并设置 TTL
+     * 4. 写入设备路由（value=nodeId）并设置 TTL
      * 5. 返回清理后 ZSET 大小（在线设备数）
      *
-     * KEYS[1]=用户 ZSET key
-     * ARGV[1]=deviceId, ARGV[2]=nodeId, ARGV[3]=channelId, ARGV[4]=ttl秒
+     * KEYS[1]=用户 ZSET key, KEYS[2]=设备路由 key
+     * ARGV[1]=deviceId, ARGV[2]=nodeId, ARGV[3]=ttl秒
      */
     private static final String LUA_TOUCH = """
             local userKey = KEYS[1]
+            local routeKey = KEYS[2]
             local deviceId = ARGV[1]
             local nodeId = ARGV[2]
-            local channelId = ARGV[3]
-            local ttl = tonumber(ARGV[4])
+            local ttl = tonumber(ARGV[3])
 
             -- 用 Redis TIME 统一时钟，避免服务节点 NTP 偏差
             local time = redis.call('TIME')
@@ -77,10 +77,8 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
             -- 注册/续租当前设备：member=deviceId，score=expireAt
             redis.call('ZADD', userKey, expireAt, deviceId)
 
-            -- 写入设备元信息（nodeId、channelId），并设置 TTL
-            local devKey = 'online:dev:' .. KEYS[1]:sub(#('online:u:') + 1) .. ':' .. deviceId
-            redis.call('HSET', devKey, 'nodeId', nodeId, 'channelId', channelId, 'lastSeen', now)
-            redis.call('EXPIRE', devKey, ttl)
+            -- 设备路由只需保存 nodeId；SET 会同时覆盖旧值并刷新 TTL
+            redis.call('SET', routeKey, nodeId, 'EX', ttl)
 
             -- 设置 ZSET key 的 TTL（兜底清理，避免 key 永驻）
             redis.call('EXPIRE', userKey, ttl + 60)
@@ -89,21 +87,20 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
             return redis.call('ZCARD', userKey)
             """;
 
-    /** 心跳只续租，不覆盖 online() 写入的 nodeId/channelId 路由。 */
+    /** 心跳只续租，不覆盖 online() 写入的 nodeId 路由。 */
     private static final String LUA_HEARTBEAT = """
             local userKey = KEYS[1]
-            local devKey = KEYS[2]
+            local routeKey = KEYS[2]
             local deviceId = ARGV[1]
             local ttl = tonumber(ARGV[2])
             local time = redis.call('TIME')
             local now = tonumber(time[1])
-            if redis.call('EXISTS', devKey) == 0 then
+            if redis.call('EXISTS', routeKey) == 0 then
                 return 0
             end
             redis.call('ZREMRANGEBYSCORE', userKey, '-inf', now)
             redis.call('ZADD', userKey, now + ttl, deviceId)
-            redis.call('HSET', devKey, 'lastSeen', now)
-            redis.call('EXPIRE', devKey, ttl)
+            redis.call('EXPIRE', routeKey, ttl)
             redis.call('EXPIRE', userKey, ttl + 60)
             return 1
             """;
@@ -114,14 +111,15 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
      * 原子操作：
      * 1. 清理 ZSET 中已过期的设备
      * 2. 从 ZSET 中移除指定设备
-     * 3. 删除设备元信息 key
+     * 3. 删除设备路由 key
      * 4. 返回剩余在线设备数
      *
-     * KEYS[1]=用户 ZSET key
+     * KEYS[1]=用户 ZSET key, KEYS[2]=设备路由 key
      * ARGV[1]=deviceId
      */
     private static final String LUA_OFFLINE = """
             local userKey = KEYS[1]
+            local routeKey = KEYS[2]
             local deviceId = ARGV[1]
 
             -- 用 Redis TIME 获取当前时间
@@ -134,9 +132,8 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
             -- 移除指定设备
             redis.call('ZREM', userKey, deviceId)
 
-            -- 删除设备元信息
-            local devKey = 'online:dev:' .. KEYS[1]:sub(#('online:u:') + 1) .. ':' .. deviceId
-            redis.call('DEL', devKey)
+            -- 删除设备路由
+            redis.call('DEL', routeKey)
 
             -- 返回剩余在线设备数
             return redis.call('ZCARD', userKey)
@@ -200,8 +197,8 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
                 local devices = redis.call('ZRANGEBYSCORE', userKey, now, '+inf')
                 local seen = {}
                 for _, deviceId in ipairs(devices) do
-                    local devKey = 'online:dev:' .. ARGV[i] .. ':' .. deviceId
-                    local targetNode = redis.call('HGET', devKey, 'nodeId')
+                    local routeKey = 'online:route:' .. ARGV[i] .. ':' .. deviceId
+                    local targetNode = redis.call('GET', routeKey)
                     if targetNode and not seen[targetNode] then
                         table.insert(result, ARGV[i])
                         table.insert(result, targetNode)
@@ -214,12 +211,13 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     @Override
     public void online(Long userId, String deviceId, String channelId) {
-        String key = USER_SET_PREFIX + userId;
+        String userKey = USER_SET_PREFIX + userId;
+        String routeKey = DEVICE_ROUTE_PREFIX + userId + ":" + deviceId;
         long ttl = presenceConfig.getLeaseTtlSeconds();
 
         DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_TOUCH, Long.class);
-        Long onlineCount = redisTemplate.execute(script, Collections.singletonList(key),
-                deviceId, nodeId, channelId, String.valueOf(ttl));
+        Long onlineCount = redisTemplate.execute(script, List.of(userKey, routeKey),
+                deviceId, nodeId, String.valueOf(ttl));
 
         log.info("设备上线: userId={}, deviceId={}, channelId={}, 在线设备数={}",
                 userId, deviceId, channelId, onlineCount);
@@ -227,10 +225,11 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     @Override
     public void offline(Long userId, String deviceId) {
-        String key = USER_SET_PREFIX + userId;
+        String userKey = USER_SET_PREFIX + userId;
+        String routeKey = DEVICE_ROUTE_PREFIX + userId + ":" + deviceId;
 
         DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_OFFLINE, Long.class);
-        Long onlineCount = redisTemplate.execute(script, Collections.singletonList(key), deviceId);
+        Long onlineCount = redisTemplate.execute(script, List.of(userKey, routeKey), deviceId);
 
         log.info("设备离线: userId={}, deviceId={}, 剩余在线设备数={}", userId, deviceId, onlineCount);
     }
@@ -238,11 +237,11 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
     @Override
     public void heartbeat(Long userId, String deviceId) {
         String userKey = USER_SET_PREFIX + userId;
-        String devKey = DEV_INFO_PREFIX + userId + ":" + deviceId;
+        String routeKey = DEVICE_ROUTE_PREFIX + userId + ":" + deviceId;
         long ttl = presenceConfig.getLeaseTtlSeconds();
 
         DefaultRedisScript<Long> script = new DefaultRedisScript<>(LUA_HEARTBEAT, Long.class);
-        redisTemplate.execute(script, List.of(userKey, devKey), deviceId, String.valueOf(ttl));
+        redisTemplate.execute(script, List.of(userKey, routeKey), deviceId, String.valueOf(ttl));
 
         log.debug("续租: userId={}, deviceId={}, ttl={}s", userId, deviceId, ttl);
     }
@@ -274,9 +273,8 @@ public class OnlineStatusServiceImpl implements OnlineStatusService {
 
     @Override
     public String getNodeId(Long userId, String deviceId) {
-        String devKey = DEV_INFO_PREFIX + userId + ":" + deviceId;
-        Object nodeId = redisTemplate.opsForHash().get(devKey, "nodeId");
-        return nodeId != null ? nodeId.toString() : null;
+        String routeKey = DEVICE_ROUTE_PREFIX + userId + ":" + deviceId;
+        return redisTemplate.opsForValue().get(routeKey);
     }
 
     @Override
