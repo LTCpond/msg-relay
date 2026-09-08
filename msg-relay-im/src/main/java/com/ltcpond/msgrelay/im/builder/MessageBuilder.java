@@ -34,9 +34,8 @@ public class MessageBuilder {
         return this;
     }
 
-    public MessageBuilder receiver(Long receiverId, Integer receiverType) {
-        message.setReceiverId(receiverId);
-        message.setReceiverType(receiverType);
+    public MessageBuilder conversation(Long conversationId) {
+        message.setConversationId(conversationId);
         return this;
     }
 

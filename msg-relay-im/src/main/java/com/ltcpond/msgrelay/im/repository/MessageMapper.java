@@ -27,12 +27,11 @@ public interface MessageMapper {
     int advanceStatus(@Param("msgId") Long msgId, @Param("newStatus") int newStatus);
 
     /** 查询历史消息 — 分页拉取，支持单聊和群聊 */
-    List<Message> selectHistory(@Param("userId") Long userId, @Param("targetId") Long targetId,
-                                @Param("receiverType") Integer receiverType,
+    List<Message> selectHistory(@Param("conversationId") Long conversationId,
                                 @Param("beforeMsgId") Long beforeMsgId, @Param("limit") int limit);
 
     /** 查询群聊中用户未 ACK 的消息 — 用于标记已读时批量 ACK */
-    List<Message> selectUnacknowledgedGroupMessages(@Param("groupId") Long groupId,
+    List<Message> selectUnacknowledgedGroupMessages(@Param("conversationId") Long conversationId,
                                                      @Param("userId") Long userId,
                                                      @Param("afterTime") LocalDateTime afterTime);
 

@@ -4,7 +4,9 @@ import com.ltcpond.msgrelay.common.result.Result;
 import com.ltcpond.msgrelay.common.result.ResultCode;
 import com.ltcpond.msgrelay.common.exception.BusinessException;
 import com.ltcpond.msgrelay.group.service.BitmapAckService;
+import com.ltcpond.msgrelay.im.model.entity.ChatConversation;
 import com.ltcpond.msgrelay.im.model.entity.Message;
+import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
 import com.ltcpond.msgrelay.im.service.MessageService;
 import com.ltcpond.msgrelay.im.service.MessageAccessService;
 import jakarta.annotation.Resource;
@@ -37,9 +39,9 @@ public class AckController {
 
         // 查询消息信息
         Message message = messageService.getByMsgIdEntity(msgId);
-        messageAccessService.assertCanAcknowledge(userId, message);
+        ChatConversation conversation = messageAccessService.assertCanAcknowledge(userId, message);
 
-        if (message.getReceiverType() == 1) {
+        if (conversation.getType() == ReceiverType.SINGLE.getCode()) {
             // 单聊：更新消息表 status
             if (status == 3) {
                 messageService.markRead(msgId);
@@ -48,7 +50,7 @@ public class AckController {
             }
         } else {
             // 群聊：用 Bitmap
-            Long groupId = message.getReceiverId();
+            Long groupId = conversation.getGroupId();
             if (status == 3) {
                 bitmapAckService.markRead(msgId, userId, groupId);
             } else {

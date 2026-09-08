@@ -5,6 +5,7 @@ import com.ltcpond.msgrelay.common.utils.SnowflakeIdGenerator;
 import com.ltcpond.msgrelay.common.lock.LockTemplate;
 import com.ltcpond.msgrelay.im.builder.MessageBuilder;
 import com.ltcpond.msgrelay.im.model.dto.SendMessageRequest;
+import com.ltcpond.msgrelay.im.model.entity.ChatConversation;
 import com.ltcpond.msgrelay.im.model.entity.Message;
 import com.ltcpond.msgrelay.im.model.entity.UserMessageHide;
 import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
@@ -49,7 +50,7 @@ import java.util.stream.Collectors;
  * - getByMsgId: ACK/MQ 消费时高频单条查消息，Caffeine L1 命中后跳过 Redis 和 DB
  *
  * 消息状态机: SENDING(0) → SENT(1) → DELIVERED(2) → READ(3)
- * 群聊同样使用投递状态机，消息类别由 receiverType 区分；成员 ACK 使用 Bitmap。
+ * 群聊同样使用投递状态机，会话类型由 conversationId 解析；成员 ACK 使用 Bitmap。
  * 撤回: 任意状态 → RECALLED(4)
  */
 @Slf4j
@@ -99,18 +100,20 @@ public class MessageServiceImpl implements MessageService {
     /** 发送消息 — 策略处理 → 建造者构造 → 事务落库 → MQ 投递，立即返回 VO */
     @Override
     public MessageVO send(Long senderId, SendMessageRequest request) {
-        messageAccessService.assertCanAccessConversation(senderId, request.getReceiverId(), request.getReceiverType());
+        ChatConversation conversation = messageAccessService.assertCanAccessConversation(
+                senderId, request.getConversationId());
         String lockKey = "msg:send:" + senderId + ":" + request.getClientMsgId();
-        return lockTemplate.executeWithLock(lockKey, 3, 15, () -> sendIdempotently(senderId, request));
+        return lockTemplate.executeWithLock(lockKey, 3, 15,
+                () -> sendIdempotently(senderId, request, conversation));
     }
 
-    private MessageVO sendIdempotently(Long senderId, SendMessageRequest request) {
+    private MessageVO sendIdempotently(Long senderId, SendMessageRequest request,
+                                        ChatConversation conversation) {
         String processedContent = strategyFactory.getStrategy(request.getMsgType())
                 .process(senderId, request);
         Message existing = messageMapper.selectBySenderAndClientMsgId(senderId, request.getClientMsgId());
         if (existing != null) {
-            if (!existing.getReceiverId().equals(request.getReceiverId())
-                    || !existing.getReceiverType().equals(request.getReceiverType())
+            if (!existing.getConversationId().equals(request.getConversationId())
                     || !existing.getMsgType().equals(request.getMsgType())
                     || !java.util.Objects.equals(existing.getContent(), processedContent)
                     || !java.util.Objects.equals(existing.getExtraJson(), request.getExtraJson())
@@ -122,12 +125,15 @@ public class MessageServiceImpl implements MessageService {
         // 2. 建造者模式：构造消息体
         Message message = MessageBuilder.builder()
                 .sender(senderId)
-                .receiver(request.getReceiverId(), request.getReceiverType())
+                .conversation(request.getConversationId())
                 .msgType(request.getMsgType())
                 .content(processedContent)
                 .extraJson(request.getExtraJson())
                 .mediaMetaJson(request.getMediaMetaJson())
                 .build();
+        message.setConversationType(conversation.getType());
+        message.setConversationTargetId(conversation.getType() == ReceiverType.GROUP.getCode()
+                ? conversation.getGroupId() : conversation.peerOf(senderId));
         message.setId(idGenerator.nextId());
         message.setMsgId(idGenerator.nextId());
         message.setClientMsgId(request.getClientMsgId());
@@ -196,9 +202,9 @@ public class MessageServiceImpl implements MessageService {
 
     /** 查询历史消息 — 分页拉取，自动过滤用户隐藏的消息，支持单聊和群聊 */
     @Override
-    public List<MessageVO> queryHistory(Long userId, Long targetId, Integer receiverType, Long beforeMsgId, int limit) {
-        messageAccessService.assertCanAccessConversation(userId, targetId, receiverType);
-        List<Message> messages = messageMapper.selectHistory(userId, targetId, receiverType, beforeMsgId, limit);
+    public List<MessageVO> queryHistory(Long userId, Long conversationId, Long beforeMsgId, int limit) {
+        messageAccessService.assertCanAccessConversation(userId, conversationId);
+        List<Message> messages = messageMapper.selectHistory(conversationId, beforeMsgId, limit);
         Set<String> hiddenSet = getHiddenSet(userId);
         return messages.stream()
                 .filter(m -> !hiddenSet.contains(m.getMsgId().toString()))
@@ -223,16 +229,19 @@ public class MessageServiceImpl implements MessageService {
     /** 推送撤回通知给所有会话成员 */
     private void pushRecall(Message message) {
         try {
+            ChatConversation conversation = messageAccessService.getConversation(message.getConversationId());
             String json = objectMapper.writeValueAsString(Map.of(
                     "type", "recall",
-                    "msgId", message.getMsgId()
+                    "msgId", message.getMsgId(),
+                    "conversationId", message.getConversationId()
             ));
-            if (message.getReceiverType() == ReceiverType.GROUP.getCode()) {
-                Set<Long> memberIds = groupService.getMemberIds(message.getReceiverId()).stream()
+            if (conversation.getType() == ReceiverType.GROUP.getCode()) {
+                Set<Long> memberIds = groupService.getMemberIds(conversation.getGroupId()).stream()
                         .map(Long::valueOf).collect(Collectors.toSet());
                 pushRouter.pushToUsers(memberIds, json);
             } else {
-                pushRouter.pushToUsers(Set.of(message.getSenderId(), message.getReceiverId()), json);
+                pushRouter.pushToUsers(Set.of(conversation.getDirectUserLow(),
+                        conversation.getDirectUserHigh()), json);
             }
         } catch (Exception e) {
             log.error("Failed to push recall event: msgId={}", message.getMsgId(), e);
@@ -272,8 +281,7 @@ public class MessageServiceImpl implements MessageService {
         vo.setClientMsgId(msg.getClientMsgId());
         vo.setSenderId(msg.getSenderId());
         vo.setSenderName(getSenderName(msg.getSenderId()));
-        vo.setReceiverId(msg.getReceiverId());
-        vo.setReceiverType(msg.getReceiverType());
+        vo.setConversationId(msg.getConversationId());
         vo.setMsgType(msg.getMsgType());
         vo.setContent(msg.getContent());
         vo.setExtraJson(msg.getExtraJson());
@@ -305,14 +313,14 @@ public class MessageServiceImpl implements MessageService {
     @Override
     public ReadStatusVO getReadStatus(Long userId, Long msgId) {
         Message message = messageMapper.selectByMsgId(msgId);
-        messageAccessService.assertCanAccessMessage(userId, message);
+        ChatConversation conversation = messageAccessService.assertCanAccessMessage(userId, message);
 
         ReadStatusVO vo = new ReadStatusVO();
         vo.setMsgId(msgId);
 
-        if (message.getReceiverType() != null && message.getReceiverType() == 2) {
+        if (conversation.getType() == ReceiverType.GROUP.getCode()) {
             // 群聊：使用 Bitmap 查询
-            Long groupId = message.getReceiverId();
+            Long groupId = conversation.getGroupId();
 
             // 已读用户列表
             List<Long> readUserIds = bitmapAckService.getReadUsers(msgId, groupId);

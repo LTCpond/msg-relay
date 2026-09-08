@@ -102,6 +102,10 @@ public class CanalListener {
                             )
                     )
                     .mappings(m -> m
+                            .properties("conversation_id", p -> p.long_(l -> l))
+                            .properties("msg_id", p -> p.long_(l -> l))
+                            .properties("sender_id", p -> p.long_(l -> l))
+                            .properties("deleted", p -> p.integer(i -> i))
                             .properties("content", p -> p
                                     .text(t -> t
                                             .analyzer("ik_max_word")

@@ -20,12 +20,11 @@ public class SearchController {
     /** 在指定会话内搜索消息，自动过滤当前用户已隐藏的消息 */
     @GetMapping("/message")
     public Result<List<Map<String, Object>>> search(@RequestParam String keyword,
-                                                     @RequestParam Long receiverId,
-                                                     @RequestParam int receiverType,
+                                                     @RequestParam Long conversationId,
                                                      @RequestParam(defaultValue = "1") int page,
                                                      @RequestParam(defaultValue = "20") int size,
                                                      HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
-        return Result.ok(searchService.search(keyword, receiverId, receiverType, userId, page, size));
+        return Result.ok(searchService.search(keyword, conversationId, userId, page, size));
     }
 }

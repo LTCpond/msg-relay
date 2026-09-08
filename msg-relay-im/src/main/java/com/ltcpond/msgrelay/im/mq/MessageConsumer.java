@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ltcpond.msgrelay.im.model.entity.Message;
 import com.ltcpond.msgrelay.im.observer.MessageObserverManager;
 import com.ltcpond.msgrelay.im.service.ConversationService;
+import com.ltcpond.msgrelay.im.service.MessageAccessService;
+import com.ltcpond.msgrelay.im.model.entity.ChatConversation;
 import com.ltcpond.msgrelay.group.service.GroupService;
 import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
 import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
@@ -35,6 +37,9 @@ public class MessageConsumer implements RocketMQListener<String> {
 
     @Resource
     private ConversationService conversationService;
+
+    @Resource
+    private MessageAccessService messageAccessService;
 
     @Resource
     private MessageObserverManager observerManager;
@@ -72,6 +77,7 @@ public class MessageConsumer implements RocketMQListener<String> {
                             return null;
                         }
 
+                        hydrateConversationContext(processingMessage);
                         updateConversations(processingMessage);
                         // MQ 消息体在本地事务执行前已序列化，这里只校正推送对象的状态；
                         // 数据库中的消息已在生产者本地事务中以 SENT 状态落库。
@@ -91,17 +97,24 @@ public class MessageConsumer implements RocketMQListener<String> {
         }
     }
 
+    private void hydrateConversationContext(Message message) {
+        ChatConversation conversation = messageAccessService.getConversation(message.getConversationId());
+        message.setConversationType(conversation.getType());
+        message.setConversationTargetId(conversation.getType() == ReceiverType.GROUP.getCode()
+                ? conversation.getGroupId() : conversation.peerOf(message.getSenderId()));
+    }
+
     private void updateConversations(Message message) {
-        if (message.getReceiverType() == ReceiverType.GROUP.getCode()) {
-            groupService.listMembers(message.getReceiverId()).forEach(member ->
-                    conversationService.updateConversation(member.getUserId(), message.getReceiverId(),
-                            ReceiverType.GROUP.getCode(), message.getMsgId(),
+        if (message.getConversationType() == ReceiverType.GROUP.getCode()) {
+            groupService.listMembers(message.getConversationTargetId()).forEach(member ->
+                    conversationService.updateConversation(member.getUserId(), message.getConversationId(),
+                            message.getMsgId(),
                             !member.getUserId().equals(message.getSenderId())));
         } else {
-            conversationService.updateConversation(message.getSenderId(), message.getReceiverId(),
-                    ReceiverType.SINGLE.getCode(), message.getMsgId(), false);
-            conversationService.updateConversation(message.getReceiverId(), message.getSenderId(),
-                    ReceiverType.SINGLE.getCode(), message.getMsgId(), true);
+            conversationService.updateConversation(message.getSenderId(), message.getConversationId(),
+                    message.getMsgId(), false);
+            conversationService.updateConversation(message.getConversationTargetId(), message.getConversationId(),
+                    message.getMsgId(), true);
         }
     }
 }

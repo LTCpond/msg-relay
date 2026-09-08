@@ -8,6 +8,7 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 public class Group extends BaseEntity {
 
+    private Long conversationId;
     private Long teamId;
     private String name;
     private String avatar;

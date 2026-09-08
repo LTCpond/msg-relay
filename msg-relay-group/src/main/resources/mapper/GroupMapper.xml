@@ -4,6 +4,7 @@
 
     <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.group.model.entity.Group">
         <id column="id" property="id"/>
+        <result column="conversation_id" property="conversationId"/>
         <result column="team_id" property="teamId"/>
         <result column="name" property="name"/>
         <result column="avatar" property="avatar"/>
@@ -16,11 +17,11 @@
         <result column="deleted" property="deleted"/>
     </resultMap>
 
-    <sql id="baseColumns">id, team_id, name, avatar, owner_id, announcement, max_members, is_muted_all, created_at, updated_at, deleted</sql>
+    <sql id="baseColumns">id, conversation_id, team_id, name, avatar, owner_id, announcement, max_members, is_muted_all, created_at, updated_at, deleted</sql>
 
     <insert id="insert" parameterType="com.ltcpond.msgrelay.group.model.entity.Group">
-        INSERT INTO t_group (id, team_id, name, avatar, owner_id, announcement, max_members, is_muted_all, created_at, updated_at)
-        VALUES (#{id}, #{teamId}, #{name}, #{avatar}, #{ownerId}, #{announcement}, #{maxMembers}, #{isMutedAll}, NOW(), NOW())
+        INSERT INTO t_group (id, conversation_id, team_id, name, avatar, owner_id, announcement, max_members, is_muted_all, created_at, updated_at)
+        VALUES (#{id}, #{conversationId}, #{teamId}, #{name}, #{avatar}, #{ownerId}, #{announcement}, #{maxMembers}, #{isMutedAll}, NOW(), NOW())
     </insert>
 
     <update id="updateById" parameterType="com.ltcpond.msgrelay.group.model.entity.Group">

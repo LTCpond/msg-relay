@@ -29,7 +29,7 @@ public interface MessageService {
     void markRead(Long msgId);
 
     /** 查询历史消息 — 分页拉取，过滤隐藏消息，支持单聊和群聊 */
-    List<MessageVO> queryHistory(Long userId, Long targetId, Integer receiverType, Long beforeMsgId, int limit);
+    List<MessageVO> queryHistory(Long userId, Long conversationId, Long beforeMsgId, int limit);
 
     /** 隐藏消息 — 仅对当前用户不可见 */
     void hideMessage(Long userId, Long msgId);

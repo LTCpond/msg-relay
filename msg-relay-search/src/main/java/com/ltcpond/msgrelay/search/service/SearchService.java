@@ -5,7 +5,6 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import com.ltcpond.msgrelay.common.cache.MultiLevelCache;
-import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
 import com.ltcpond.msgrelay.im.service.MessageAccessService;
 import com.ltcpond.msgrelay.im.repository.UserMessageHideMapper;
 import jakarta.annotation.Resource;
@@ -45,9 +44,9 @@ public class SearchService {
     private static final String INDEX_NAME = "message_index";
 
     /** 在指定会话内搜索消息，过滤当前用户隐藏的消息 */
-    public List<Map<String, Object>> search(String keyword, Long receiverId, int receiverType,
+    public List<Map<String, Object>> search(String keyword, Long conversationId,
                                             Long userId, int page, int size) {
-        messageAccessService.assertCanAccessConversation(userId, receiverId, receiverType);
+        messageAccessService.assertCanAccessConversation(userId, conversationId);
         try {
             SearchResponse<Map> response = elasticsearchClient.search(s -> s
                             .index(INDEX_NAME)
@@ -58,21 +57,11 @@ public class SearchService {
                                                     .query(keyword)
                                                     .analyzer("ik_smart")))
                                             .filter(f -> f.term(t -> t
-                                                    .field("receiver_type")
-                                                    .value(receiverType)))
-                                            .filter(f -> f.term(t -> t
                                                     .field("deleted")
                                                     .value("0")))
-                                            .filter(receiverType == ReceiverType.GROUP.getCode()
-                                                    ? f -> f.term(t -> t.field("receiver_id").value(receiverId))
-                                                    : f -> f.bool(participants -> participants
-                                                            .minimumShouldMatch("1")
-                                                            .should(side -> side.bool(pair -> pair
-                                                                    .filter(x -> x.term(t -> t.field("sender_id").value(userId)))
-                                                                    .filter(x -> x.term(t -> t.field("receiver_id").value(receiverId)))))
-                                                            .should(side -> side.bool(pair -> pair
-                                                                    .filter(x -> x.term(t -> t.field("sender_id").value(receiverId)))
-                                                                    .filter(x -> x.term(t -> t.field("receiver_id").value(userId)))))))
+                                            .filter(f -> f.term(t -> t
+                                                    .field("conversation_id")
+                                                    .value(conversationId)))
                                     )
                             )
                             .sort(srt -> srt.field(f -> f
@@ -97,7 +86,7 @@ public class SearchService {
             }
             return results;
         } catch (IOException e) {
-            log.error("Search failed: keyword={}, receiverId={}", keyword, receiverId, e);
+            log.error("Search failed: keyword={}, conversationId={}", keyword, conversationId, e);
             return List.of();
         }
     }

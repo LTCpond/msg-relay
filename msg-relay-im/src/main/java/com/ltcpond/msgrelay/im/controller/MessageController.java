@@ -10,9 +10,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-
-
 /** 消息控制器 — 消息发送、撤回、隐藏、历史查询、已读状态 */
 @RestController
 @RequestMapping("/api/im/message")
@@ -46,17 +43,6 @@ public class MessageController {
         Long userId = (Long) request.getAttribute("userId");
         messageService.hideMessage(userId, msgId);
         return Result.ok();
-    }
-
-    /** 查询历史消息 — 分页拉取，自动过滤隐藏消息，支持单聊和群聊 */
-    @GetMapping("/history/{targetId}")
-    public Result<List<MessageVO>> history(@PathVariable Long targetId,
-                                            @RequestParam Integer receiverType,
-                                            @RequestParam(required = false) Long beforeMsgId,
-                                            @RequestParam(defaultValue = "50") int limit,
-                                            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId");
-        return Result.ok(messageService.queryHistory(userId, targetId, receiverType, beforeMsgId, limit));
     }
 
     /** 查询消息已读状态 — 仅会话参与者可查看 */

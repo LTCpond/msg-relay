@@ -160,6 +160,17 @@ REST 接口统一使用 `/api` 前缀，主要分组如下：
 - `/api/file`：文件上传与下载
 - `/api/search`：消息全文检索
 
+单聊和群聊对外统一使用全局 `conversationId`：
+
+```http
+POST /api/im/conversation/direct
+GET  /api/im/conversation/{conversationId}/messages
+PUT  /api/im/conversation/{conversationId}/read
+POST /api/im/message/send
+GET  /api/search/message?conversationId={conversationId}&keyword={keyword}
+```
+
+
 除登录和刷新 Token 外，请求需要携带访问令牌：
 
 ```http

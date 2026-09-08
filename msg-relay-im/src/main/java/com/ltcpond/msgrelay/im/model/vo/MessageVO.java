@@ -17,10 +17,8 @@ public class MessageVO {
     private Long senderId;
     /** 发送者名称 */
     private String senderName;
-    /** 接收者 ID */
-    private Long receiverId;
-    /** 接收者类型: 1=单聊 2=群聊 */
-    private Integer receiverType;
+    /** 全局会话 ID */
+    private Long conversationId;
     /** 消息类型 */
     private Integer msgType;
     /** 消息正文 */

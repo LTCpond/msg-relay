@@ -14,13 +14,9 @@ public class SendMessageRequest {
     @Size(max = 64, message = "clientMsgId 最长 64 个字符")
     private String clientMsgId;
 
-    /** 接收者 ID（用户或群） */
-    @NotNull(message = "接收者不能为空")
-    private Long receiverId;
-
-    /** 接收者类型: 1=单聊 2=群聊 */
-    @NotNull(message = "接收者类型不能为空")
-    private Integer receiverType;
+    /** 全局会话 ID */
+    @NotNull(message = "conversationId 不能为空")
+    private Long conversationId;
 
     /** 消息类型: 1=文本 2=图片 3=文件 4=语音 5=系统通知 */
     @NotNull(message = "消息类型不能为空")

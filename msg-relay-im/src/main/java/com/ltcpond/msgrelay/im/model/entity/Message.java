@@ -15,10 +15,12 @@ public class Message extends BaseEntity {
     private String clientMsgId;
     /** 发送者 UID */
     private Long senderId;
-    /** 接收者 ID（用户 ID 或群 ID，由 receiverType 区分） */
-    private Long receiverId;
-    /** 接收者类型: 1=单聊 2=群聊 */
-    private Integer receiverType;
+    /** 全局会话 ID */
+    private Long conversationId;
+    /** MQ/推送上下文，不落库：1=单聊 2=群聊 */
+    private Integer conversationType;
+    /** MQ/推送上下文，不落库：单聊对方或群 ID */
+    private Long conversationTargetId;
     /** 消息类型: 1=文本 2=图片 3=文件 4=语音 5=系统通知 */
     private Integer msgType;
     /** 消息正文 */
@@ -27,6 +29,6 @@ public class Message extends BaseEntity {
     private String extraJson;
     /** 媒体元数据 JSON（图片宽高、语音时长、文件名/大小） */
     private String mediaMetaJson;
-    /** 投递状态: 0=发送中 1=已发送 2=已投递 3=已读 4=已撤回；群聊由 receiverType 区分 */
+    /** 投递状态: 0=发送中 1=已发送 2=已投递 3=已读 4=已撤回 */
     private Integer status;
 }

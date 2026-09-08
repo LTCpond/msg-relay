@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.ltcpond.msgrelay.im.repository.ConversationMapper">
-
     <resultMap id="BaseResultMap" type="com.ltcpond.msgrelay.im.model.entity.Conversation">
         <id column="id" property="id"/>
         <result column="user_id" property="userId"/>
+        <result column="conversation_id" property="conversationId"/>
+        <result column="type" property="type"/>
         <result column="target_id" property="targetId"/>
-        <result column="target_type" property="targetType"/>
         <result column="last_msg_id" property="lastMsgId"/>
         <result column="unread_count" property="unreadCount"/>
         <result column="last_read_time" property="lastReadTime"/>
@@ -15,57 +15,65 @@
         <result column="deleted" property="deleted"/>
     </resultMap>
 
-    <sql id="baseColumns">
-        id, user_id, target_id, target_type, last_msg_id, unread_count,
-        last_read_time, created_at, updated_at, deleted
+    <sql id="joinedColumns">
+        uc.id, uc.user_id, uc.conversation_id, c.type,
+        CASE WHEN c.type = 1
+             THEN IF(c.direct_user_low = uc.user_id, c.direct_user_high, c.direct_user_low)
+             ELSE c.group_id END AS target_id,
+        uc.last_msg_id, uc.unread_count, uc.last_read_time,
+        uc.created_at, uc.updated_at, uc.deleted
     </sql>
 
     <insert id="insert" parameterType="com.ltcpond.msgrelay.im.model.entity.Conversation">
-        INSERT INTO t_conversation (id, user_id, target_id, target_type, last_msg_id, unread_count, last_read_time, created_at, updated_at)
-        VALUES (#{id}, #{userId}, #{targetId}, #{targetType}, #{lastMsgId}, #{unreadCount}, #{lastReadTime}, NOW(), NOW())
+        INSERT INTO t_user_conversation
+            (id, user_id, conversation_id, last_msg_id, unread_count, last_read_time, created_at, updated_at, deleted)
+        VALUES
+            (#{id}, #{userId}, #{conversationId}, #{lastMsgId}, #{unreadCount}, #{lastReadTime}, NOW(), NOW(), 0)
     </insert>
 
     <update id="updateById" parameterType="com.ltcpond.msgrelay.im.model.entity.Conversation">
-        UPDATE t_conversation
+        UPDATE t_user_conversation
         SET last_msg_id = #{lastMsgId}, unread_count = #{unreadCount},
-            last_read_time = #{lastReadTime},
-            updated_at = NOW()
+            last_read_time = #{lastReadTime}, updated_at = NOW()
         WHERE id = #{id} AND deleted = 0
     </update>
 
     <select id="selectById" resultMap="BaseResultMap">
-        SELECT <include refid="baseColumns"/> FROM t_conversation WHERE id = #{id} AND deleted = 0
+        SELECT <include refid="joinedColumns"/>
+        FROM t_user_conversation uc
+        JOIN t_conversation c ON c.id = uc.conversation_id AND c.deleted = 0
+        WHERE uc.id = #{id} AND uc.deleted = 0
     </select>
 
-    <select id="selectByUserAndTarget" resultMap="BaseResultMap">
-        SELECT <include refid="baseColumns"/> FROM t_conversation
-        WHERE user_id = #{userId} AND target_id = #{targetId}
-          AND target_type = #{targetType} AND deleted = 0
+    <select id="selectByUserAndConversation" resultMap="BaseResultMap">
+        SELECT <include refid="joinedColumns"/>
+        FROM t_user_conversation uc
+        JOIN t_conversation c ON c.id = uc.conversation_id AND c.deleted = 0
+        WHERE uc.user_id = #{userId} AND uc.conversation_id = #{conversationId}
+          AND uc.deleted = 0
     </select>
 
     <select id="selectByUserId" resultMap="BaseResultMap">
-        SELECT <include refid="baseColumns"/> FROM t_conversation
-        WHERE user_id = #{userId} AND deleted = 0 ORDER BY updated_at DESC
+        SELECT <include refid="joinedColumns"/>
+        FROM t_user_conversation uc
+        JOIN t_conversation c ON c.id = uc.conversation_id AND c.deleted = 0
+        WHERE uc.user_id = #{userId} AND uc.deleted = 0
+        ORDER BY uc.updated_at DESC
     </select>
 
-    <!-- 原子递增未读数 — last_msg_id &lt; msgId 保证同一消息只计数一次 -->
     <update id="updateConversationByMsg">
-        UPDATE t_conversation
+        UPDATE t_user_conversation
         SET unread_count = unread_count + 1,
-            last_msg_id = #{msgId},
-            updated_at = NOW()
-        WHERE user_id = #{userId}
-          AND target_id = #{targetId}
-          AND target_type = #{targetType}
-          AND last_msg_id &lt; #{msgId}
-          AND deleted = 0
+            last_msg_id = #{msgId}, updated_at = NOW()
+        WHERE user_id = #{userId} AND conversation_id = #{conversationId}
+          AND last_msg_id &lt; #{msgId} AND deleted = 0
     </update>
 
     <insert id="upsertByMessage">
-        INSERT INTO t_conversation
-            (id, user_id, target_id, target_type, last_msg_id, unread_count, created_at, updated_at, deleted)
+        INSERT INTO t_user_conversation
+            (id, user_id, conversation_id, last_msg_id, unread_count, created_at, updated_at, deleted)
         VALUES
-            (#{id}, #{userId}, #{targetId}, #{targetType}, #{msgId},
+            (#{id}, #{userId}, #{conversationId}, #{msgId},
              IF(#{incrementUnread}, 1, 0), NOW(), NOW(), 0)
         ON DUPLICATE KEY UPDATE
             unread_count = IF(last_msg_id IS NULL OR last_msg_id &lt; VALUES(last_msg_id),
@@ -75,8 +83,29 @@
             deleted = 0
     </insert>
 
-    <update id="deleteByIdLogic">
-        UPDATE t_conversation SET deleted = 1, updated_at = NOW() WHERE id = #{id}
+    <insert id="upsertMember">
+        INSERT INTO t_user_conversation
+            (id, user_id, conversation_id, unread_count, created_at, updated_at, deleted)
+        VALUES (#{id}, #{userId}, #{conversationId}, 0, NOW(), NOW(), 0)
+        ON DUPLICATE KEY UPDATE deleted = 0, updated_at = NOW()
+    </insert>
+
+    <update id="deleteByUserAndConversation">
+        UPDATE t_user_conversation SET deleted = 1, updated_at = NOW()
+        WHERE user_id = #{userId} AND conversation_id = #{conversationId} AND deleted = 0
     </update>
 
+    <update id="deleteByConversationId">
+        UPDATE t_user_conversation SET deleted = 1, updated_at = NOW()
+        WHERE conversation_id = #{conversationId} AND deleted = 0
+    </update>
+
+    <select id="selectUserIdsByConversationId" resultType="java.lang.Long">
+        SELECT user_id FROM t_user_conversation
+        WHERE conversation_id = #{conversationId} AND deleted = 0
+    </select>
+
+    <update id="deleteByIdLogic">
+        UPDATE t_user_conversation SET deleted = 1, updated_at = NOW() WHERE id = #{id}
+    </update>
 </mapper>

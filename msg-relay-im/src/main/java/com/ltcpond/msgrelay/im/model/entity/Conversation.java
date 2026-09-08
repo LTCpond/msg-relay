@@ -6,17 +6,19 @@ import lombok.EqualsAndHashCode;
 
 import java.time.LocalDateTime;
 
-/** 会话实体 — 用户与单聊/群聊之间的一对一会话记录 */
+/** 用户会话投影 — 保存用户维度的未读数与最后阅读状态。 */
 @Data
 @EqualsAndHashCode(callSuper = true)
 public class Conversation extends BaseEntity {
 
     /** 会话所属用户 ID */
     private Long userId;
-    /** 对方 ID（单聊为用户 ID，群聊为群 ID） */
+    /** 全局会话 ID */
+    private Long conversationId;
+    /** 会话类型: 1=单聊 2=群聊（联表查询字段） */
+    private Integer type;
+    /** 展示目标：单聊为对方用户 ID，群聊为群 ID（联表查询字段） */
     private Long targetId;
-    /** 对方类型: 1=单聊 2=群聊 */
-    private Integer targetType;
     /** 最后一条消息 ID */
     private Long lastMsgId;
     /** 未读计数 */

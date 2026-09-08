@@ -9,12 +9,14 @@ import com.ltcpond.msgrelay.group.model.entity.GroupMember;
 import com.ltcpond.msgrelay.group.repository.GroupMapper;
 import com.ltcpond.msgrelay.group.repository.GroupMemberMapper;
 import com.ltcpond.msgrelay.group.service.GroupMemberIndexService;
+import com.ltcpond.msgrelay.group.service.GroupConversationLifecycle;
 import com.ltcpond.msgrelay.group.service.GroupService;
 import com.ltcpond.msgrelay.user.model.entity.User;
 import com.ltcpond.msgrelay.user.repository.UserMapper;
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -22,6 +24,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
+@Transactional
 public class GroupServiceImpl implements GroupService {
 
     @Resource
@@ -45,6 +48,9 @@ public class GroupServiceImpl implements GroupService {
     @Resource
     private GroupMemberIndexService groupMemberIndexService;
 
+    @Resource
+    private GroupConversationLifecycle groupConversationLifecycle;
+
     private static final int LARGE_GROUP_THRESHOLD = 500;
     private static final long MEMBER_LIST_TTL = 300;
 
@@ -57,6 +63,7 @@ public class GroupServiceImpl implements GroupService {
 
         Group group = new Group();
         group.setId(idGenerator.nextId());
+        group.setConversationId(idGenerator.nextId());
         group.setOwnerId(ownerId);
         group.setTeamId(owner.getTeamId());
         group.setName(name);
@@ -77,6 +84,8 @@ public class GroupServiceImpl implements GroupService {
         member.setCreatedAt(LocalDateTime.now());
         member.setUpdatedAt(LocalDateTime.now());
         groupMemberMapper.insert(member);
+
+        groupConversationLifecycle.create(group.getConversationId(), group.getId(), ownerId);
 
         redisTemplate.opsForSet().add("group:members:" + group.getId(), ownerId.toString());
         groupMemberIndexService.assignMemberIndex(group.getId(), ownerId);
@@ -122,6 +131,7 @@ public class GroupServiceImpl implements GroupService {
         member.setCreatedAt(LocalDateTime.now());
         member.setUpdatedAt(LocalDateTime.now());
         groupMemberMapper.insert(member);
+        groupConversationLifecycle.addMember(group.getConversationId(), userId);
         redisTemplate.opsForSet().add("group:members:" + groupId, userId.toString());
 
         // 为新成员分配 Bitmap 位序号
@@ -141,6 +151,7 @@ public class GroupServiceImpl implements GroupService {
         }
 
         groupMemberMapper.deleteByGroupIdAndUserId(groupId, userId);
+        groupConversationLifecycle.removeMember(group.getConversationId(), userId);
         redisTemplate.opsForSet().remove("group:members:" + groupId, userId.toString());
 
         // 处理 Bitmap 退群
@@ -239,6 +250,7 @@ public class GroupServiceImpl implements GroupService {
         }
 
         groupMapper.deleteByIdLogic(groupId);
+        groupConversationLifecycle.delete(group.getConversationId());
         redisTemplate.delete("group:members:" + groupId);
     }
 
@@ -252,6 +264,7 @@ public class GroupServiceImpl implements GroupService {
             throw new BusinessException(ResultCode.BAD_REQUEST, "群主不能退出，请先转让群主");
         }
         groupMemberMapper.deleteByGroupIdAndUserId(groupId, userId);
+        groupConversationLifecycle.removeMember(group.getConversationId(), userId);
         redisTemplate.opsForSet().remove("group:members:" + groupId, userId.toString());
 
         // 处理 Bitmap 退群

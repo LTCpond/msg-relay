@@ -35,11 +35,11 @@ public class WebSocketPushObserver implements MessagePushObserver {
 
     @Override
     public void onMessage(Message message) {
-        if (ReceiverType.GROUP.getCode() == message.getReceiverType()) {
+        if (ReceiverType.GROUP.getCode() == message.getConversationType()) {
             handleGroupMessage(message);
         } else {
             try {
-                pushRouter.pushToUsers(Set.of(message.getReceiverId(), message.getSenderId()),
+                pushRouter.pushToUsers(Set.of(message.getConversationTargetId(), message.getSenderId()),
                         buildMessageJson(message));
             } catch (JsonProcessingException e) {
                 log.error("Failed to serialize message", e);
@@ -49,7 +49,7 @@ public class WebSocketPushObserver implements MessagePushObserver {
 
     /** 群聊推送 — 大群发通知（拉模式），小群扩散写（推模式） */
     private void handleGroupMessage(Message message) {
-        Long groupId = message.getReceiverId();
+        Long groupId = message.getConversationTargetId();
         Set<String> memberIds = groupService.getMemberIds(groupId);
 
         if (groupService.isLargeGroup(groupId)) {
@@ -69,7 +69,7 @@ public class WebSocketPushObserver implements MessagePushObserver {
         try {
             String json = objectMapper.writeValueAsString(Map.of(
                     "type", "group_notify",
-                    "groupId", message.getReceiverId(),
+                    "conversationId", message.getConversationId(),
                     "lastMsgId", message.getMsgId()
             ));
             Set<Long> recipients = memberIds.stream().map(Long::valueOf)
@@ -86,6 +86,7 @@ public class WebSocketPushObserver implements MessagePushObserver {
         return objectMapper.writeValueAsString(Map.of(
                 "type", "message",
                 "msgId", message.getMsgId(),
+                "conversationId", message.getConversationId(),
                 "senderId", message.getSenderId(),
                 "content", message.getContent(),
                 "msgType", message.getMsgType(),
