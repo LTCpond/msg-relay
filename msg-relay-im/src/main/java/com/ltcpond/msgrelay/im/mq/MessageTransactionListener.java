@@ -2,6 +2,7 @@ package com.ltcpond.msgrelay.im.mq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ltcpond.msgrelay.im.model.entity.Message;
+import com.ltcpond.msgrelay.im.model.enums.MessageStatus;
 import com.ltcpond.msgrelay.im.repository.MessageMapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -28,14 +29,15 @@ public class MessageTransactionListener implements RocketMQLocalTransactionListe
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** 执行本地事务 — 落库 MySQL，成功返回 COMMIT */
+    /** 执行本地事务 — 以 SENT 状态落库 MySQL，成功返回 COMMIT */
     @Override
     public RocketMQLocalTransactionState executeLocalTransaction(org.springframework.messaging.Message msg, Object arg) {
         try {
             if (arg instanceof Message) {
                 Message message = (Message) arg;
+                message.setStatus(MessageStatus.SENT.getCode());
                 messageMapper.insert(message);
-                log.info("Local transaction executed successfully, msgId={}", message.getMsgId());
+                log.info("Local transaction persisted message as SENT, msgId={}", message.getMsgId());
                 return RocketMQLocalTransactionState.COMMIT;
             }
             return RocketMQLocalTransactionState.UNKNOWN;

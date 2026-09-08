@@ -81,13 +81,4 @@
         ORDER BY msg_id ASC
     </select>
 
-    <select id="selectStaleMessages" resultMap="BaseResultMap">
-        SELECT <include refid="baseColumns"/> FROM t_message
-        WHERE deleted = 0
-          AND status = #{status}
-          AND created_at &lt; #{cutoff}
-        ORDER BY created_at ASC
-        LIMIT 500
-    </select>
-
 </mapper>

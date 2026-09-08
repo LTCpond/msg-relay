@@ -8,7 +8,7 @@ Msg Relay 是一个基于 Spring Boot 的即时通信后端，采用 Maven 多�
 - 单聊、群聊、会话列表、消息撤回与用户侧隐藏
 - Netty WebSocket 长连接、心跳检测与在线状态维护
 - Redis Pub/Sub 跨节点推送与 Caffeine + Redis 多级缓存
-- RocketMQ 事务消息、消费幂等、ACK 与异常消息补偿
+- RocketMQ 事务消息、消费幂等、ACK 与死信监控
 - 大群推拉结合、群消息已读位图
 - Canal 订阅 MySQL Binlog，并同步消息到 Elasticsearch
 - 阿里云 OSS 文件上传与下载

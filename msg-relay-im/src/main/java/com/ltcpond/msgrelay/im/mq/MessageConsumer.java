@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ltcpond.msgrelay.im.model.entity.Message;
 import com.ltcpond.msgrelay.im.observer.MessageObserverManager;
-import com.ltcpond.msgrelay.im.repository.MessageMapper;
 import com.ltcpond.msgrelay.im.service.ConversationService;
 import com.ltcpond.msgrelay.group.service.GroupService;
 import com.ltcpond.msgrelay.im.model.enums.ReceiverType;
@@ -33,9 +32,6 @@ import java.util.concurrent.TimeUnit;
 @Component
 @RocketMQMessageListener(topic = "msg-relay-message-topic", consumerGroup = "msg-relay-message-consumer")
 public class MessageConsumer implements RocketMQListener<String> {
-
-    @Resource
-    private MessageMapper messageMapper;
 
     @Resource
     private ConversationService conversationService;
@@ -77,12 +73,13 @@ public class MessageConsumer implements RocketMQListener<String> {
                         }
 
                         updateConversations(processingMessage);
-                        messageMapper.advanceStatus(processingMessage.getMsgId(), MessageStatus.SENT.getCode());
+                        // MQ 消息体在本地事务执行前已序列化，这里只校正推送对象的状态；
+                        // 数据库中的消息已在生产者本地事务中以 SENT 状态落库。
                         processingMessage.setStatus(MessageStatus.SENT.getCode());
                         cache.evict("msg:" + processingMessage.getMsgId());
                         observerManager.notifyObservers(processingMessage);
                         redisTemplate.opsForValue().set(doneKey, "1", 7, TimeUnit.DAYS);
-                        log.info("Message persisted and pushed: msgId={}", processingMessage.getMsgId());
+                        log.info("Message processed and pushed: msgId={}", processingMessage.getMsgId());
                         return null;
                     });
         } catch (JsonProcessingException e) {

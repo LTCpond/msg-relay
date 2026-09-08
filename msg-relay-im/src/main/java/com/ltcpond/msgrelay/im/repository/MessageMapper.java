@@ -36,7 +36,4 @@ public interface MessageMapper {
                                                      @Param("userId") Long userId,
                                                      @Param("afterTime") LocalDateTime afterTime);
 
-    /** 查询超时未投递的消息 — 用于补偿任务 */
-    List<Message> selectStaleMessages(@Param("status") int status,
-                                       @Param("cutoff") String cutoff);
 }

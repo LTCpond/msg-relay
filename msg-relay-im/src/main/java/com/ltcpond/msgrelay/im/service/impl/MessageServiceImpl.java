@@ -132,7 +132,7 @@ public class MessageServiceImpl implements MessageService {
         message.setMsgId(idGenerator.nextId());
         message.setClientMsgId(request.getClientMsgId());
         message.setDeleted(0);
-        // 本地事务先持久化 SENDING；Consumer 完成会话与推送链路后推进到 SENT。
+        // 发送请求初始为 SENDING；RocketMQ 本地事务落库时改为 SENT。
         message.setStatus(MessageStatus.SENDING.getCode());
         message.setCreatedAt(LocalDateTime.now());
         message.setUpdatedAt(LocalDateTime.now());
